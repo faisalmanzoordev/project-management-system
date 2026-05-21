@@ -1,0 +1,25 @@
+# Visual Studio
+.vs/
+bin/
+obj/
+
+# React
+node_modules/
+dist/
+build/
+
+# Environment files
+.env
+.env.*
+
+# App Settings
+appsettings.json
+appsettings.Development.json
+appsettings.Production.json
+
+# Logs
+*.log
+
+# OS Files
+Thumbs.db
+.DS_Store
