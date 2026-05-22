@@ -1,686 +1,1326 @@
-import React, { useEffect, useMemo, useState } from "react";
-import axiosInstance from "../api/axiosInstance";
+import React, { useMemo, useState } from "react";
+import { useApp } from "../context/AppContext";
+import type { TaskItem, TaskPriority, TaskStatus } from "../context/AppContext";
 
-export type TaskItemStatus =
-  | "Pending"
-  | "InProgress"
-  | "Done"
-  | "Overdue"
-  | "OnHold"
-  | "Critical"
-  | "Cancelled";
+type ViewMode = "table" | "kanban" | "calendar";
 
-export type TaskPriority = "Low" | "Medium" | "High" | "Critical";
-
-export type ViewState = "table" | "kanban" | "calendar";
-
-export type Workspace = {
-  id: number;
-  name: string;
-  description?: string | null;
-};
-
-export type Project = {
-  id: number;
-  workspaceId: number;
-  name: string;
-  description?: string | null;
-};
-
-export type ApiTask = {
-  id: number;
-  projectId: number;
-  parentTaskId?: number | null;
-  title: string;
-  description?: string | null;
-  targetDate?: string | null;
-  status: TaskItemStatus | number;
-  priority?: TaskPriority | number; // optional (backend may not send)
-  assigneeName?: string | null; // optional (backend may not send)
-};
-
-export type UiTask = {
-  id: number;
-  projectId: number;
-  parentTaskId?: number | null;
-  title: string;
-  description?: string | null;
-  targetDate?: string | null;
-  status: TaskItemStatus;
-  priority: TaskPriority;
-  assigneeName: string;
-};
-
-export type KanbanColumn = {
-  id: "todo" | "inprogress" | "done";
-  title: string;
-  statuses: TaskItemStatus[];
-};
-
-const kanbanColumns: KanbanColumn[] = [
-  { id: "todo", title: "To Do", statuses: ["Pending", "OnHold"] },
-  { id: "inprogress", title: "In Progress", statuses: ["InProgress", "Overdue", "Critical"] },
-  { id: "done", title: "Done", statuses: ["Done", "Cancelled"] },
-];
-
-function normalizeTaskStatus(value: TaskItemStatus | number): TaskItemStatus {
-  if (typeof value === "string") return value;
-
-  const map: Record<number, TaskItemStatus> = {
-    0: "Pending",
-    1: "InProgress",
-    2: "Done",
-    3: "Overdue",
-    4: "OnHold",
-    5: "Critical",
-    6: "Cancelled",
-  };
-
-  return map[value] ?? "Pending";
-}
-
-function normalizePriority(value: TaskPriority | number | undefined): TaskPriority {
-  if (!value) return "Medium";
-  if (typeof value === "string") return value;
-
-  const map: Record<number, TaskPriority> = {
-    0: "Low",
-    1: "Medium",
-    2: "High",
-    3: "Critical",
-  };
-
-  return map[value] ?? "Medium";
-}
-
-function statusLabel(status: TaskItemStatus): string {
-  switch (status) {
-    case "InProgress":
-      return "In Progress";
-    case "OnHold":
-      return "On Hold";
-    default:
-      return status;
-  }
-}
-
-function statusPillClasses(status: TaskItemStatus): string {
-  const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset";
-  switch (status) {
-    case "Done":
-      return `${base} bg-emerald-50 text-emerald-700 ring-emerald-200`;
-    case "InProgress":
-      return `${base} bg-blue-50 text-blue-700 ring-blue-200`;
-    case "Pending":
-      return `${base} bg-slate-50 text-slate-700 ring-slate-200`;
-    case "OnHold":
-      return `${base} bg-amber-50 text-amber-800 ring-amber-200`;
-    case "Overdue":
-      return `${base} bg-rose-50 text-rose-700 ring-rose-200`;
-    case "Critical":
-      return `${base} bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200`;
-    case "Cancelled":
-      return `${base} bg-gray-50 text-gray-700 ring-gray-200`;
-    default:
-      return `${base} bg-slate-50 text-slate-700 ring-slate-200`;
-  }
+function classNames(...classes: Array<string | false | null | undefined>): string {
+    return classes.filter(Boolean).join(" ");
 }
 
 function formatDate(dateIso?: string | null): string {
-  if (!dateIso) return "—";
-  const d = new Date(dateIso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+    if (!dateIso) return "—";
+    const d = new Date(dateIso);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
 }
 
-function initials(name: string): string {
-  const clean = name.trim();
-  if (!clean) return "?";
-  const parts = clean.split(/\s+/).slice(0, 2);
-  const letters = parts.map((p) => p[0]?.toUpperCase() ?? "").join("");
-  return letters || "?";
+function toDateInputValue(dateIso?: string | null): string {
+    if (!dateIso) return "";
+    const d = new Date(dateIso);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
 }
 
-function sameDate(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+function statusPill(status: TaskStatus): string {
+    const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset";
+    if (status === "Done") return `${base} bg-emerald-50 text-emerald-700 ring-emerald-200`;
+    if (status === "In Progress") return `${base} bg-blue-50 text-blue-700 ring-blue-200`;
+    return `${base} bg-slate-50 text-slate-700 ring-slate-200`;
 }
 
-function startOfMonth(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), 1);
+function priorityPill(priority: TaskPriority): string {
+    const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset";
+    if (priority === "High") return `${base} bg-rose-50 text-rose-700 ring-rose-200`;
+    if (priority === "Medium") return `${base} bg-amber-50 text-amber-800 ring-amber-200`;
+    return `${base} bg-slate-50 text-slate-700 ring-slate-200`;
 }
 
-function endOfMonth(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+function sameDay(a: Date, b: Date): boolean {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-function addMonths(date: Date, delta: number): Date {
-  return new Date(date.getFullYear(), date.getMonth() + delta, 1);
+function startOfMonth(d: Date): Date {
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+function endOfMonth(d: Date): Date {
+    return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+}
+function addMonths(d: Date, delta: number): Date {
+    return new Date(d.getFullYear(), d.getMonth() + delta, 1);
 }
 
-type TaskModalProps = {
-  task: UiTask;
-  onClose: () => void;
+type ModalProps = {
+    title: string;
+    children: React.ReactNode;
+    onClose: () => void;
 };
 
-const TaskModal: React.FC<TaskModalProps> = ({ task, onClose }) => {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
-      <div className="relative w-full max-w-lg rounded-lg bg-white p-5 shadow-xl ring-1 ring-slate-200">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-900">{task.title}</h3>
-            <div className="mt-1 text-sm text-slate-600">
-              {task.description ?? "No description"}
+const Modal: React.FC<ModalProps> = ({ title, children, onClose }) => {
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <button
+                type="button"
+                className="absolute inset-0 bg-slate-900/40"
+                onClick={onClose}
+                aria-label="Close modal overlay"
+            />
+            <div className="relative w-full max-w-2xl rounded-lg border border-slate-200 bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+                    <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
+                    >
+                        Close
+                    </button>
+                </div>
+                <div className="px-5 py-4">{children}</div>
             </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-          >
-            Close
-          </button>
         </div>
+    );
+};
 
-        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-md border border-slate-200 p-3">
-            <div className="text-xs font-medium text-slate-500">Status</div>
-            <div className="mt-1">
-              <span className={statusPillClasses(task.status)}>{statusLabel(task.status)}</span>
-            </div>
-          </div>
+type TaskFormState = {
+    title: string;
+    description: string;
+    assignee: string;
+    priority: TaskPriority;
+    status: TaskStatus;
+    dueDate: string; // yyyy-mm-dd
+};
 
-          <div className="rounded-md border border-slate-200 p-3">
-            <div className="text-xs font-medium text-slate-500">Due Date</div>
-            <div className="mt-1 font-medium text-slate-900">{formatDate(task.targetDate)}</div>
-          </div>
-
-          <div className="rounded-md border border-slate-200 p-3">
-            <div className="text-xs font-medium text-slate-500">Priority</div>
-            <div className="mt-1 font-medium text-slate-900">{task.priority}</div>
-          </div>
-
-          <div className="rounded-md border border-slate-200 p-3">
-            <div className="text-xs font-medium text-slate-500">Assignee</div>
-            <div className="mt-1 font-medium text-slate-900">{task.assigneeName}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+const defaultTaskForm: TaskFormState = {
+    title: "",
+    description: "",
+    assignee: "",
+    priority: "Medium",
+    status: "To Do",
+    dueDate: "",
 };
 
 const Workspaces: React.FC = () => {
-  const [view, setView] = useState<ViewState>("table");
-  const [query, setQuery] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+    const {
+        workspaces,
+        projects,
+        tasks,
+        selectedWorkspaceId,
+        selectedProjectId,
+        setSelectedWorkspaceId,
+        setSelectedProjectId,
+        isLoading,
+        error,
 
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [tasks, setTasks] = useState<UiTask[]>([]);
+        createWorkspace,
+        updateWorkspace,
+        deleteWorkspace,
 
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | "all">("all");
-  const [selectedProjectId, setSelectedProjectId] = useState<number | "all">("all");
+        createProject,
+        updateProject,
+        deleteProject,
 
-  const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
-  const [selectedTask, setSelectedTask] = useState<UiTask | null>(null);
+        createTask,
+        updateTask,
+        deleteTask,
+        toggleTaskStatus,
+    } = useApp();
 
-  useEffect(() => {
-    const load = async () => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const [wsRes, prRes, taskRes] = await Promise.all([
-          axiosInstance.get<Workspace[]>("workspaces"),
-          axiosInstance.get<Project[]>("projects"),
-          axiosInstance.get<ApiTask[]>("tasks"),
-        ]);
+    const [viewMode, setViewMode] = useState<ViewMode>("table");
+    const [search, setSearch] = useState<string>("");
 
-        setWorkspaces(wsRes.data);
-        setProjects(prRes.data);
+    const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
 
-        const normalizedTasks: UiTask[] = taskRes.data.map((t) => ({
-          id: t.id,
-          projectId: t.projectId,
-          parentTaskId: t.parentTaskId ?? null,
-          title: t.title,
-          description: t.description ?? null,
-          targetDate: t.targetDate ?? null,
-          status: normalizeTaskStatus(t.status),
-          priority: normalizePriority(t.priority),
-          assigneeName: (t.assigneeName ?? "").trim() || "Unassigned",
-        }));
+    // Modals
+    const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+    const [isTaskEditMode, setIsTaskEditMode] = useState(false);
+    const [taskEditId, setTaskEditId] = useState<number | null>(null);
+    const [taskForm, setTaskForm] = useState<TaskFormState>({ ...defaultTaskForm });
 
-        setTasks(normalizedTasks);
-      } catch (err: any) {
-        setError(err?.response?.data?.message ?? "Failed to load workspace data.");
-      } finally {
-        setIsLoading(false);
-      }
-    };
+    const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
 
-    load();
-  }, []);
+    const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
+    const [workspaceEditId, setWorkspaceEditId] = useState<number | null>(null);
+    const [workspaceName, setWorkspaceName] = useState("");
+    const [workspaceDescription, setWorkspaceDescription] = useState("");
 
-  const projectsForWorkspace = useMemo(() => {
-    if (selectedWorkspaceId === "all") return projects;
-    return projects.filter((p) => p.workspaceId === selectedWorkspaceId);
-  }, [projects, selectedWorkspaceId]);
+    const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+    const [projectEditId, setProjectEditId] = useState<number | null>(null);
+    const [projectName, setProjectName] = useState("");
+    const [projectDescription, setProjectDescription] = useState("");
 
-  useEffect(() => {
-    if (selectedProjectId !== "all") {
-      const projectIsInWorkspace =
-        selectedWorkspaceId === "all" ||
-        projectsForWorkspace.some((p) => p.id === selectedProjectId);
+    const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
+    const [newSubtaskAssignee, setNewSubtaskAssignee] = useState("");
+    const [newSubtaskPriority, setNewSubtaskPriority] = useState<TaskPriority>("Medium");
+    const [newSubtaskDueDate, setNewSubtaskDueDate] = useState("");
 
-      if (!projectIsInWorkspace) setSelectedProjectId("all");
-    }
-  }, [projectsForWorkspace, selectedProjectId, selectedWorkspaceId]);
+    const selectedWorkspace = useMemo(
+        () => workspaces.find((w) => w.id === selectedWorkspaceId) ?? null,
+        [workspaces, selectedWorkspaceId]
+    );
 
-  const filteredTasks = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const selectedProject = useMemo(
+        () => projects.find((p) => p.id === selectedProjectId) ?? null,
+        [projects, selectedProjectId]
+    );
 
-    const allowedProjectIds =
-      selectedWorkspaceId === "all"
-        ? null
-        : new Set(projectsForWorkspace.map((p) => p.id));
+    const topLevelTasks = useMemo(() => tasks.filter((t) => !t.parentTaskId), [tasks]);
 
-    return tasks.filter((t) => {
-      if (selectedProjectId !== "all" && t.projectId !== selectedProjectId) return false;
-      if (allowedProjectIds && !allowedProjectIds.has(t.projectId)) return false;
+    const filteredTasks = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        if (!q) return topLevelTasks;
+        return topLevelTasks.filter((t) => {
+            const hay = `${t.title} ${t.description ?? ""} ${t.assignee ?? ""}`.toLowerCase();
+            return hay.includes(q);
+        });
+    }, [topLevelTasks, search]);
 
-      if (!q) return true;
+    const taskById = useMemo(() => {
+        const map = new Map<number, TaskItem>();
+        for (const t of tasks) map.set(t.id, t);
+        return map;
+    }, [tasks]);
 
-      const haystack = `${t.title} ${t.description ?? ""} ${t.assigneeName}`.toLowerCase();
-      return haystack.includes(q);
+    const selectedTask = useMemo(
+        () => (selectedTaskId ? taskById.get(selectedTaskId) ?? null : null),
+        [selectedTaskId, taskById]
+    );
+
+    const selectedTaskSubtasks = useMemo(() => {
+        if (!selectedTask) return [];
+        return tasks
+            .filter((t) => t.parentTaskId === selectedTask.id)
+            .sort((a, b) => a.id - b.id);
+    }, [tasks, selectedTask]);
+
+    const kanbanColumns = useMemo(() => {
+        return [
+            { title: "To Do", status: "To Do" as TaskStatus },
+            { title: "In Progress", status: "In Progress" as TaskStatus },
+            { title: "Done", status: "Done" as TaskStatus },
+        ];
+    }, []);
+
+    const calendarCells = useMemo(() => {
+        const start = startOfMonth(calendarMonth);
+        const end = endOfMonth(calendarMonth);
+
+        const startWeekday = start.getDay(); // 0-6
+        const totalDays = end.getDate();
+
+        const cells: Array<{ date: Date | null }> = [];
+        for (let i = 0; i < startWeekday; i++) cells.push({ date: null });
+
+        for (let day = 1; day <= totalDays; day++) {
+            cells.push({ date: new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day) });
+        }
+
+        while (cells.length % 7 !== 0) cells.push({ date: null });
+        return cells;
+    }, [calendarMonth]);
+
+    const tasksForCalendarDate = useCallbackForTasks(tasks, (date: Date) => {
+        return tasks
+            .filter((t) => t.dueDate)
+            .filter((t) => {
+                const d = new Date(t.dueDate!);
+                if (Number.isNaN(d.getTime())) return false;
+                return sameDay(d, date);
+            })
+            .sort((a, b) => a.title.localeCompare(b.title));
     });
-  }, [tasks, query, selectedWorkspaceId, selectedProjectId, projectsForWorkspace]);
 
-  const tasksByColumn = useMemo(() => {
-    const map: Record<string, UiTask[]> = {};
-    for (const col of kanbanColumns) {
-      map[col.id] = filteredTasks.filter((t) => col.statuses.includes(t.status));
-    }
-    return map as Record<KanbanColumn["id"], UiTask[]>;
-  }, [filteredTasks]);
+    function openCreateTaskModal() {
+        if (!selectedProjectId) return;
 
-  const calendarCells = useMemo(() => {
-    const monthStart = startOfMonth(calendarMonth);
-    const monthEnd = endOfMonth(calendarMonth);
-
-    const startWeekday = monthStart.getDay(); // 0 Sun - 6 Sat
-    const totalDays = monthEnd.getDate();
-
-    const cells: Array<{ date: Date | null }> = [];
-
-    for (let i = 0; i < startWeekday; i++) cells.push({ date: null });
-    for (let day = 1; day <= totalDays; day++) {
-      cells.push({ date: new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day) });
+        setIsTaskEditMode(false);
+        setTaskEditId(null);
+        setTaskForm({ ...defaultTaskForm });
+        setIsTaskModalOpen(true);
     }
 
-    while (cells.length % 7 !== 0) cells.push({ date: null });
+    function openEditTaskModal(task: TaskItem) {
+        setIsTaskEditMode(true);
+        setTaskEditId(task.id);
 
-    return cells;
-  }, [calendarMonth]);
+        setTaskForm({
+            title: task.title,
+            description: task.description ?? "",
+            assignee: task.assignee ?? "",
+            priority: task.priority,
+            status: task.status,
+            dueDate: toDateInputValue(task.dueDate ?? null),
+        });
 
-  const tasksForDate = (date: Date): UiTask[] => {
-    return filteredTasks.filter((t) => {
-      if (!t.targetDate) return false;
-      const due = new Date(t.targetDate);
-      if (Number.isNaN(due.getTime())) return false;
-      return sameDate(due, date);
-    });
-  };
+        setIsTaskModalOpen(true);
+    }
 
-  const ViewToggleButton: React.FC<{ id: ViewState; label: string }> = ({ id, label }) => (
-    <button
-      type="button"
-      onClick={() => setView(id)}
-      className={[
-        "rounded-md px-3 py-2 text-sm font-medium transition-colors",
-        view === id
-          ? "bg-slate-900 text-white"
-          : "bg-white text-slate-700 ring-1 ring-inset ring-slate-200 hover:bg-slate-50",
-      ].join(" ")}
-    >
-      {label}
-    </button>
-  );
+    function openTaskDetail(taskId: number) {
+        setSelectedTaskId(taskId);
+        setNewSubtaskTitle("");
+        setNewSubtaskAssignee("");
+        setNewSubtaskPriority("Medium");
+        setNewSubtaskDueDate("");
+    }
 
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900">Workspaces</h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Switch between table, Kanban, and calendar views for tasks.
-          </p>
-        </div>
+    function closeTaskDetail() {
+        setSelectedTaskId(null);
+    }
 
-        <div className="flex flex-wrap items-center gap-2">
-          <ViewToggleButton id="table" label="Table" />
-          <ViewToggleButton id="kanban" label="Kanban" />
-          <ViewToggleButton id="calendar" label="Calendar" />
-        </div>
-      </div>
+    async function handleSubmitTaskForm(e: React.FormEvent) {
+        e.preventDefault();
+        if (!selectedProjectId) return;
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-        <div className="lg:col-span-3">
-          <label className="block text-sm font-medium text-slate-700">Workspace</label>
-          <select
-            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-            value={selectedWorkspaceId}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedWorkspaceId(val === "all" ? "all" : Number(val));
-            }}
-          >
-            <option value="all">All workspaces</option>
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        const dueIso = taskForm.dueDate ? new Date(`${taskForm.dueDate}T00:00:00`).toISOString() : null;
 
-        <div className="lg:col-span-3">
-          <label className="block text-sm font-medium text-slate-700">Project</label>
-          <select
-            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-            value={selectedProjectId}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedProjectId(val === "all" ? "all" : Number(val));
-            }}
-          >
-            <option value="all">All projects</option>
-            {projectsForWorkspace.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        if (!taskForm.title.trim()) return;
 
-        <div className="lg:col-span-6">
-          <label className="block text-sm font-medium text-slate-700">Search</label>
-          <input
-            type="text"
-            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-            placeholder="Search by title, description, or assignee..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-      </div>
+        if (!isTaskEditMode) {
+            await createTask({
+                projectId: selectedProjectId,
+                parentTaskId: null,
+                title: taskForm.title,
+                description: taskForm.description || null,
+                status: taskForm.status,
+                priority: taskForm.priority,
+                dueDate: dueIso,
+                assignee: taskForm.assignee || null,
+            });
+        } else if (taskEditId) {
+            const current = taskById.get(taskEditId);
+            if (!current) return;
 
-      {isLoading && (
-        <div className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-700">
-          Loading workspace data...
-        </div>
-      )}
+            await updateTask(taskEditId, {
+                projectId: selectedProjectId,
+                parentTaskId: current.parentTaskId ?? null,
+                title: taskForm.title,
+                description: taskForm.description || null,
+                status: taskForm.status,
+                priority: taskForm.priority,
+                dueDate: dueIso,
+                assignee: taskForm.assignee || null,
+            });
+        }
 
-      {error && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-          {error}
-        </div>
-      )}
+        setIsTaskModalOpen(false);
+    }
 
-      {!isLoading && !error && (
-        <>
-          {/* A) Table View */}
-          {view === "table" && (
-            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-              <div className="border-b border-slate-200 px-4 py-3">
-                <div className="text-sm font-semibold text-slate-900">Task List</div>
-                <div className="mt-1 text-xs text-slate-500">
-                  Showing {filteredTasks.length} task(s)
-                </div>
-              </div>
+    async function handleDeleteTask(taskId: number) {
+        const ok = window.confirm("Delete this task?");
+        if (!ok) return;
 
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-slate-200">
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        Title
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        Assignee
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        Priority
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        Due Date
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        Status
-                      </th>
-                    </tr>
-                  </thead>
+        await deleteTask(taskId);
 
-                  <tbody className="divide-y divide-slate-200">
-                    {filteredTasks.length === 0 ? (
-                      <tr>
-                        <td className="px-4 py-6 text-sm text-slate-600" colSpan={5}>
-                          No tasks match your filters.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredTasks.map((t) => (
-                        <tr
-                          key={t.id}
-                          className="hover:bg-slate-50"
-                        >
-                          <td className="px-4 py-3">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedTask(t)}
-                              className="text-left text-sm font-semibold text-slate-900 hover:underline"
-                            >
-                              {t.title}
-                            </button>
-                            <div className="mt-1 line-clamp-1 text-xs text-slate-500">
-                              {t.description ?? ""}
-                            </div>
-                          </td>
+        if (selectedTaskId === taskId) closeTaskDetail();
+    }
 
-                          <td className="px-4 py-3 text-sm text-slate-700">
-                            {t.assigneeName}
-                          </td>
+    function openCreateWorkspaceModal() {
+        setWorkspaceEditId(null);
+        setWorkspaceName("");
+        setWorkspaceDescription("");
+        setIsWorkspaceModalOpen(true);
+    }
 
-                          <td className="px-4 py-3 text-sm text-slate-700">
-                            {t.priority}
-                          </td>
+    function openEditWorkspaceModal() {
+        if (!selectedWorkspace) return;
+        setWorkspaceEditId(selectedWorkspace.id);
+        setWorkspaceName(selectedWorkspace.name);
+        setWorkspaceDescription(selectedWorkspace.description ?? "");
+        setIsWorkspaceModalOpen(true);
+    }
 
-                          <td className="px-4 py-3 text-sm text-slate-700">
-                            {formatDate(t.targetDate)}
-                          </td>
+    async function handleSubmitWorkspace(e: React.FormEvent) {
+        e.preventDefault();
+        if (!workspaceName.trim()) return;
 
-                          <td className="px-4 py-3 text-sm">
-                            <span className={statusPillClasses(t.status)}>
-                              {statusLabel(t.status)}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+        if (!workspaceEditId) {
+            const created = await createWorkspace({
+                name: workspaceName,
+                description: workspaceDescription || null,
+            });
+            setSelectedWorkspaceId(created.id);
+        } else {
+            await updateWorkspace(workspaceEditId, {
+                name: workspaceName,
+                description: workspaceDescription || null,
+            });
+        }
 
-          {/* B) Kanban View */}
-          {view === "kanban" && (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              {kanbanColumns.map((col) => (
-                <div key={col.id} className="rounded-lg border border-slate-200 bg-white">
-                  <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-                    <div className="text-sm font-semibold text-slate-900">{col.title}</div>
-                    <div className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
-                      {tasksByColumn[col.id].length}
+        setIsWorkspaceModalOpen(false);
+    }
+
+    async function handleDeleteWorkspace() {
+        if (!selectedWorkspace) return;
+        const ok = window.confirm("Delete this workspace? This will also remove access to its projects/tasks.");
+        if (!ok) return;
+
+        await deleteWorkspace(selectedWorkspace.id);
+    }
+
+    function openCreateProjectModal() {
+        if (!selectedWorkspaceId) return;
+        setProjectEditId(null);
+        setProjectName("");
+        setProjectDescription("");
+        setIsProjectModalOpen(true);
+    }
+
+    function openEditProjectModal() {
+        if (!selectedProject) return;
+        setProjectEditId(selectedProject.id);
+        setProjectName(selectedProject.name);
+        setProjectDescription(selectedProject.description ?? "");
+        setIsProjectModalOpen(true);
+    }
+
+    async function handleSubmitProject(e: React.FormEvent) {
+        e.preventDefault();
+        if (!selectedWorkspaceId) return;
+        if (!projectName.trim()) return;
+
+        if (!projectEditId) {
+            const created = await createProject({
+                workspaceId: selectedWorkspaceId,
+                name: projectName,
+                description: projectDescription || null,
+            });
+            setSelectedProjectId(created.id);
+        } else {
+            await updateProject(projectEditId, {
+                workspaceId: selectedWorkspaceId,
+                name: projectName,
+                description: projectDescription || null,
+            });
+        }
+
+        setIsProjectModalOpen(false);
+    }
+
+    async function handleDeleteProject() {
+        if (!selectedProject) return;
+        const ok = window.confirm("Delete this project and all its tasks?");
+        if (!ok) return;
+
+        await deleteProject(selectedProject.id);
+    }
+
+    async function toggleSubtaskDone(subtask: TaskItem, done: boolean) {
+        if (!selectedProjectId) return;
+
+        const newStatus: TaskStatus = done ? "Done" : "To Do";
+
+        await updateTask(subtask.id, {
+            projectId: subtask.projectId,
+            parentTaskId: subtask.parentTaskId ?? null,
+            title: subtask.title,
+            description: subtask.description ?? null,
+            status: newStatus,
+            priority: subtask.priority,
+            dueDate: subtask.dueDate ?? null,
+            assignee: subtask.assignee ?? null,
+        });
+    }
+
+    async function addSubtask() {
+        if (!selectedProjectId || !selectedTask) return;
+        if (!newSubtaskTitle.trim()) return;
+
+        const dueIso = newSubtaskDueDate
+            ? new Date(`${newSubtaskDueDate}T00:00:00`).toISOString()
+            : null;
+
+        await createTask({
+            projectId: selectedProjectId,
+            parentTaskId: selectedTask.id,
+            title: newSubtaskTitle,
+            description: null,
+            status: "To Do",
+            priority: newSubtaskPriority,
+            dueDate: dueIso,
+            assignee: newSubtaskAssignee || null,
+        });
+
+        setNewSubtaskTitle("");
+        setNewSubtaskAssignee("");
+        setNewSubtaskPriority("Medium");
+        setNewSubtaskDueDate("");
+    }
+
+    const canCreateTask = Boolean(selectedWorkspaceId && selectedProjectId);
+
+    return (
+        <div className="space-y-6">
+            {/* Header + Filters */}
+            <div className="rounded-lg border border-slate-200 bg-white p-4">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                        <h1 className="text-xl font-semibold text-slate-900">Workspace Dashboard</h1>
+                        <p className="mt-1 text-sm text-slate-600">
+                            Filter by workspace/project, then manage tasks in table, Kanban, or calendar views.
+                        </p>
                     </div>
-                  </div>
 
-                  <div className="space-y-3 p-3">
-                    {tasksByColumn[col.id].length === 0 ? (
-                      <div className="rounded-md border border-dashed border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                        No tasks in this lane.
-                      </div>
-                    ) : (
-                      tasksByColumn[col.id].map((t) => (
+                    <div className="flex flex-wrap items-center gap-2">
                         <button
-                          key={t.id}
-                          type="button"
-                          onClick={() => setSelectedTask(t)}
-                          className="w-full rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold text-slate-900">
-                                {t.title}
-                              </div>
-                              <div className="mt-1 line-clamp-2 text-xs text-slate-600">
-                                {t.description ?? ""}
-                              </div>
-                            </div>
-
-                            <span className={statusPillClasses(t.status)}>
-                              {statusLabel(t.status)}
-                            </span>
-                          </div>
-
-                          <div className="mt-3 flex items-center justify-between">
-                            <div className="text-xs text-slate-600">
-                              Due: <span className="font-medium text-slate-900">{formatDate(t.targetDate)}</span>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <div className="rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white">
-                                {initials(t.assigneeName)}
-                              </div>
-                            </div>
-                          </div>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* C) Calendar View */}
-          {view === "calendar" && (
-            <div className="rounded-lg border border-slate-200 bg-white">
-              <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-slate-900">Calendar</div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setCalendarMonth((d) => addMonths(d, -1))}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-                  >
-                    Prev
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCalendarMonth(new Date())}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-                  >
-                    Today
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCalendarMonth((d) => addMonths(d, 1))}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 text-center text-xs font-semibold uppercase tracking-wide text-slate-600">
-                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-                  <div key={d} className="px-2 py-3">
-                    {d}
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-7">
-                {calendarCells.map((cell, idx) => {
-                  const isToday = cell.date ? sameDate(cell.date, new Date()) : false;
-                  const dayTasks = cell.date ? tasksForDate(cell.date) : [];
-
-                  return (
-                    <div
-                      key={idx}
-                      className="min-h-28 border-b border-r border-slate-200 p-2"
-                    >
-                      {cell.date ? (
-                        <div className="flex items-center justify-between">
-                          <div
-                            className={[
-                              "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold",
-                              isToday ? "bg-slate-900 text-white" : "text-slate-700",
-                            ].join(" ")}
-                          >
-                            {cell.date.getDate()}
-                          </div>
-                          <div className="text-[11px] text-slate-400">
-                            {dayTasks.length > 0 ? `${dayTasks.length} task(s)` : ""}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="h-7" />
-                      )}
-
-                      <div className="mt-2 space-y-2">
-                        {dayTasks.slice(0, 3).map((t) => (
-                          <button
-                            key={t.id}
                             type="button"
-                            onClick={() => setSelectedTask(t)}
-                            className="w-full truncate rounded-md bg-slate-900 px-2 py-1 text-left text-xs font-medium text-white hover:bg-slate-800"
-                          >
-                            {t.title}
-                          </button>
-                        ))}
+                            onClick={openCreateWorkspaceModal}
+                            className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                        >
+                            + New Workspace
+                        </button>
 
-                        {dayTasks.length > 3 && (
-                          <div className="text-xs text-slate-500">
-                            +{dayTasks.length - 3} more
-                          </div>
-                        )}
-                      </div>
+                        <button
+                            type="button"
+                            onClick={openCreateProjectModal}
+                            disabled={!selectedWorkspaceId}
+                            className={classNames(
+                                "rounded-md px-3 py-2 text-sm font-semibold",
+                                selectedWorkspaceId
+                                    ? "bg-slate-900 text-white hover:bg-slate-800"
+                                    : "cursor-not-allowed bg-slate-200 text-slate-500"
+                            )}
+                        >
+                            + New Project
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={openCreateTaskModal}
+                            disabled={!canCreateTask}
+                            className={classNames(
+                                "rounded-md px-3 py-2 text-sm font-semibold",
+                                canCreateTask
+                                    ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                                    : "cursor-not-allowed bg-emerald-100 text-emerald-400"
+                            )}
+                        >
+                            + Create New Task
+                        </button>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+                </div>
 
-          {selectedTask && <TaskModal task={selectedTask} onClose={() => setSelectedTask(null)} />}
-        </>
-      )}
-    </div>
-  );
+                <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+                    <div className="lg:col-span-4">
+                        <label className="block text-sm font-medium text-slate-700">Workspace</label>
+                        <div className="mt-1 flex items-center gap-2">
+                            <select
+                                value={selectedWorkspaceId ?? ""}
+                                onChange={(e) => {
+                                    const v = e.target.value ? Number(e.target.value) : null;
+                                    setSelectedWorkspaceId(v);
+                                }}
+                                className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            >
+                                <option value="" disabled>
+                                    Select workspace...
+                                </option>
+                                {workspaces.map((w) => (
+                                    <option key={w.id} value={w.id}>
+                                        {w.name}
+                                    </option>
+                                ))}
+                            </select>
+
+                            <button
+                                type="button"
+                                onClick={openEditWorkspaceModal}
+                                disabled={!selectedWorkspace}
+                                className={classNames(
+                                    "rounded-md border px-3 py-2 text-sm font-semibold",
+                                    selectedWorkspace
+                                        ? "border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+                                        : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                )}
+                            >
+                                Edit
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handleDeleteWorkspace}
+                                disabled={!selectedWorkspace}
+                                className={classNames(
+                                    "rounded-md border px-3 py-2 text-sm font-semibold",
+                                    selectedWorkspace
+                                        ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                                        : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                )}
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="lg:col-span-4">
+                        <label className="block text-sm font-medium text-slate-700">Project</label>
+                        <div className="mt-1 flex items-center gap-2">
+                            <select
+                                value={selectedProjectId ?? ""}
+                                onChange={(e) => {
+                                    const v = e.target.value ? Number(e.target.value) : null;
+                                    setSelectedProjectId(v);
+                                }}
+                                className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                disabled={!selectedWorkspaceId}
+                            >
+                                <option value="" disabled>
+                                    Select project...
+                                </option>
+                                {projects.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                        {p.name}
+                                    </option>
+                                ))}
+                            </select>
+
+                            <button
+                                type="button"
+                                onClick={openEditProjectModal}
+                                disabled={!selectedProject}
+                                className={classNames(
+                                    "rounded-md border px-3 py-2 text-sm font-semibold",
+                                    selectedProject
+                                        ? "border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+                                        : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                )}
+                            >
+                                Edit
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handleDeleteProject}
+                                disabled={!selectedProject}
+                                className={classNames(
+                                    "rounded-md border px-3 py-2 text-sm font-semibold",
+                                    selectedProject
+                                        ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                                        : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                                )}
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="lg:col-span-4">
+                        <label className="block text-sm font-medium text-slate-700">Search Tasks</label>
+                        <input
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            placeholder="Search by title, description, assignee..."
+                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                        />
+                    </div>
+                </div>
+            </div>
+
+            {/* View Switcher */}
+            <div className="flex flex-wrap items-center gap-2">
+                <button
+                    type="button"
+                    onClick={() => setViewMode("table")}
+                    className={classNames(
+                        "rounded-md px-3 py-2 text-sm font-semibold ring-1 ring-inset",
+                        viewMode === "table"
+                            ? "bg-slate-900 text-white ring-slate-900"
+                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                    )}
+                >
+                    Table View
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setViewMode("kanban")}
+                    className={classNames(
+                        "rounded-md px-3 py-2 text-sm font-semibold ring-1 ring-inset",
+                        viewMode === "kanban"
+                            ? "bg-slate-900 text-white ring-slate-900"
+                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                    )}
+                >
+                    Kanban View
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setViewMode("calendar")}
+                    className={classNames(
+                        "rounded-md px-3 py-2 text-sm font-semibold ring-1 ring-inset",
+                        viewMode === "calendar"
+                            ? "bg-slate-900 text-white ring-slate-900"
+                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                    )}
+                >
+                    Calendar View
+                </button>
+            </div>
+
+            {/* Loading / Error */}
+            {isLoading && (
+                <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                    Loading data...
+                </div>
+            )}
+
+            {error && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-800">
+                    {error}
+                </div>
+            )}
+
+            {/* Content */}
+            {!isLoading && !error && (
+                <>
+                    {/* TABLE VIEW */}
+                    {viewMode === "table" && (
+                        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                            <div className="border-b border-slate-200 px-4 py-3">
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                        <div className="text-sm font-semibold text-slate-900">Tasks</div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                            Workspace: <span className="font-medium text-slate-700">{selectedWorkspace?.name ?? "—"}</span>{" "}
+                                            • Project: <span className="font-medium text-slate-700">{selectedProject?.name ?? "—"}</span>
+                                        </div>
+                                    </div>
+                                    <div className="text-xs text-slate-500">
+                                        Showing <span className="font-semibold text-slate-700">{filteredTasks.length}</span> task(s)
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full divide-y divide-slate-200">
+                                    <thead className="bg-slate-50">
+                                        <tr>
+                                            <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                                Title
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                                Description
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                                Assignee
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                                Priority
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                                Due Date
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                                Status
+                                            </th>
+                                            <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                                Actions
+                                            </th>
+                                        </tr>
+                                    </thead>
+
+                                    <tbody className="divide-y divide-slate-200">
+                                        {filteredTasks.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-600">
+                                                    No tasks found for the selected project.
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            filteredTasks.map((t) => (
+                                                <tr key={t.id} className="hover:bg-slate-50">
+                                                    <td className="px-4 py-3">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openTaskDetail(t.id)}
+                                                            className="text-left text-sm font-semibold text-slate-900 hover:underline"
+                                                        >
+                                                            {t.title}
+                                                        </button>
+                                                        <div className="mt-1 text-xs text-slate-500">
+                                                            Subtasks:{" "}
+                                                            <span className="font-semibold text-slate-700">
+                                                                {tasks.filter((x) => x.parentTaskId === t.id).length}
+                                                            </span>
+                                                        </div>
+                                                    </td>
+
+                                                    <td className="px-4 py-3 text-sm text-slate-700">
+                                                        <div className="max-w-md truncate">{t.description ?? "—"}</div>
+                                                    </td>
+
+                                                    <td className="px-4 py-3 text-sm text-slate-700">{t.assignee ?? "Unassigned"}</td>
+
+                                                    <td className="px-4 py-3">
+                                                        <span className={priorityPill(t.priority)}>{t.priority}</span>
+                                                    </td>
+
+                                                    <td className="px-4 py-3 text-sm text-slate-700">{formatDate(t.dueDate ?? null)}</td>
+
+                                                    <td className="px-4 py-3">
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <span className={statusPill(t.status)}>{t.status}</span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => toggleTaskStatus(t.id)}
+                                                                className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                                                            >
+                                                                Toggle
+                                                            </button>
+                                                        </div>
+                                                    </td>
+
+                                                    <td className="px-4 py-3">
+                                                        <div className="flex items-center justify-end gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openEditTaskModal(t)}
+                                                                className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                                                            >
+                                                                Edit
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeleteTask(t.id)}
+                                                                className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* KANBAN VIEW */}
+                    {viewMode === "kanban" && (
+                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                            {kanbanColumns.map((col) => {
+                                const colTasks = filteredTasks
+                                    .filter((t) => t.status === col.status)
+                                    .sort((a, b) => a.title.localeCompare(b.title));
+
+                                return (
+                                    <div key={col.title} className="rounded-lg border border-slate-200 bg-white">
+                                        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                                            <div className="text-sm font-semibold text-slate-900">{col.title}</div>
+                                            <div className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+                                                {colTasks.length}
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-3 p-3">
+                                            {colTasks.length === 0 ? (
+                                                <div className="rounded-md border border-dashed border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                                                    No tasks in this column.
+                                                </div>
+                                            ) : (
+                                                colTasks.map((t) => (
+                                                    <button
+                                                        key={t.id}
+                                                        type="button"
+                                                        onClick={() => openTaskDetail(t.id)}
+                                                        className="w-full rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm hover:bg-slate-50"
+                                                    >
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div>
+                                                                <div className="text-sm font-semibold text-slate-900">{t.title}</div>
+                                                                <div className="mt-1 line-clamp-2 text-xs text-slate-600">
+                                                                    {t.description ?? ""}
+                                                                </div>
+                                                            </div>
+                                                            <span className={statusPill(t.status)}>{t.status}</span>
+                                                        </div>
+
+                                                        <div className="mt-3 flex items-center justify-between">
+                                                            <span className={priorityPill(t.priority)}>{t.priority}</span>
+                                                            <div className="text-xs text-slate-600">
+                                                                Due: <span className="font-semibold text-slate-900">{formatDate(t.dueDate ?? null)}</span>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="mt-2 text-xs text-slate-600">
+                                                            Assignee: <span className="font-semibold text-slate-900">{t.assignee ?? "Unassigned"}</span>
+                                                        </div>
+                                                    </button>
+                                                ))
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* CALENDAR VIEW */}
+                    {viewMode === "calendar" && (
+                        <div className="rounded-lg border border-slate-200 bg-white">
+                            <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                    <div className="text-sm font-semibold text-slate-900">Calendar</div>
+                                    <div className="mt-1 text-xs text-slate-500">
+                                        {calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setCalendarMonth((d) => addMonths(d, -1))}
+                                        className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                        Prev
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setCalendarMonth(new Date())}
+                                        className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                        Today
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setCalendarMonth((d) => addMonths(d, 1))}
+                                        className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 text-center text-xs font-semibold uppercase tracking-wide text-slate-600">
+                                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+                                    <div key={d} className="px-2 py-3">
+                                        {d}
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="grid grid-cols-7">
+                                {calendarCells.map((cell, idx) => {
+                                    const isToday = cell.date ? sameDay(cell.date, new Date()) : false;
+                                    const dayTasks = cell.date ? tasksForCalendarDate(cell.date) : [];
+
+                                    return (
+                                        <div key={idx} className="min-h-28 border-b border-r border-slate-200 p-2">
+                                            {cell.date ? (
+                                                <div className="flex items-center justify-between">
+                                                    <div
+                                                        className={classNames(
+                                                            "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold",
+                                                            isToday ? "bg-slate-900 text-white" : "text-slate-700"
+                                                        )}
+                                                    >
+                                                        {cell.date.getDate()}
+                                                    </div>
+                                                    <div className="text-[11px] text-slate-400">
+                                                        {dayTasks.length ? `${dayTasks.length} task(s)` : ""}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="h-7" />
+                                            )}
+
+                                            <div className="mt-2 space-y-2">
+                                                {dayTasks.slice(0, 4).map((t) => (
+                                                    <button
+                                                        key={t.id}
+                                                        type="button"
+                                                        onClick={() => openTaskDetail(t.id)}
+                                                        className={classNames(
+                                                            "w-full truncate rounded-md px-2 py-1 text-left text-xs font-semibold",
+                                                            t.status === "Done"
+                                                                ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                                                                : t.status === "In Progress"
+                                                                    ? "bg-blue-600 text-white hover:bg-blue-700"
+                                                                    : "bg-slate-900 text-white hover:bg-slate-800"
+                                                        )}
+                                                    >
+                                                        {t.title}
+                                                    </button>
+                                                ))}
+                                                {dayTasks.length > 4 && (
+                                                    <div className="text-xs text-slate-500">+{dayTasks.length - 4} more</div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Task Create/Edit Modal */}
+            {isTaskModalOpen && (
+                <Modal title={isTaskEditMode ? "Edit Task" : "Create New Task"} onClose={() => setIsTaskModalOpen(false)}>
+                    <form onSubmit={handleSubmitTaskForm} className="space-y-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                            <div className="sm:col-span-2">
+                                <label className="block text-sm font-medium text-slate-700">Title</label>
+                                <input
+                                    value={taskForm.title}
+                                    onChange={(e) => setTaskForm((p) => ({ ...p, title: e.target.value }))}
+                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                    required
+                                />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                                <label className="block text-sm font-medium text-slate-700">Description</label>
+                                <textarea
+                                    value={taskForm.description}
+                                    onChange={(e) => setTaskForm((p) => ({ ...p, description: e.target.value }))}
+                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                    rows={4}
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700">Assignee</label>
+                                <input
+                                    value={taskForm.assignee}
+                                    onChange={(e) => setTaskForm((p) => ({ ...p, assignee: e.target.value }))}
+                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                    placeholder="e.g., Faisal"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700">Due Date</label>
+                                <input
+                                    type="date"
+                                    value={taskForm.dueDate}
+                                    onChange={(e) => setTaskForm((p) => ({ ...p, dueDate: e.target.value }))}
+                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700">Priority</label>
+                                <select
+                                    value={taskForm.priority}
+                                    onChange={(e) => setTaskForm((p) => ({ ...p, priority: e.target.value as TaskPriority }))}
+                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                >
+                                    <option value="Low">Low</option>
+                                    <option value="Medium">Medium</option>
+                                    <option value="High">High</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700">Status</label>
+                                <select
+                                    value={taskForm.status}
+                                    onChange={(e) => setTaskForm((p) => ({ ...p, status: e.target.value as TaskStatus }))}
+                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                >
+                                    <option value="To Do">To Do</option>
+                                    <option value="In Progress">In Progress</option>
+                                    <option value="Done">Done</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
+                            <button
+                                type="button"
+                                onClick={() => setIsTaskModalOpen(false)}
+                                className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                disabled={!selectedProjectId}
+                                className={classNames(
+                                    "rounded-md px-4 py-2 text-sm font-semibold text-white",
+                                    selectedProjectId ? "bg-slate-900 hover:bg-slate-800" : "cursor-not-allowed bg-slate-300"
+                                )}
+                            >
+                                {isTaskEditMode ? "Save Changes" : "Create Task"}
+                            </button>
+                        </div>
+                    </form>
+                </Modal>
+            )}
+
+            {/* Workspace Create/Edit Modal */}
+            {isWorkspaceModalOpen && (
+                <Modal title={workspaceEditId ? "Edit Workspace" : "Create Workspace"} onClose={() => setIsWorkspaceModalOpen(false)}>
+                    <form onSubmit={handleSubmitWorkspace} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Name</label>
+                            <input
+                                value={workspaceName}
+                                onChange={(e) => setWorkspaceName(e.target.value)}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                required
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Description</label>
+                            <textarea
+                                value={workspaceDescription}
+                                onChange={(e) => setWorkspaceDescription(e.target.value)}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                rows={4}
+                            />
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
+                            <button
+                                type="button"
+                                onClick={() => setIsWorkspaceModalOpen(false)}
+                                className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                            >
+                                {workspaceEditId ? "Save Changes" : "Create Workspace"}
+                            </button>
+                        </div>
+                    </form>
+                </Modal>
+            )}
+
+            {/* Project Create/Edit Modal */}
+            {isProjectModalOpen && (
+                <Modal title={projectEditId ? "Edit Project" : "Create Project"} onClose={() => setIsProjectModalOpen(false)}>
+                    <form onSubmit={handleSubmitProject} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Name</label>
+                            <input
+                                value={projectName}
+                                onChange={(e) => setProjectName(e.target.value)}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                required
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Description</label>
+                            <textarea
+                                value={projectDescription}
+                                onChange={(e) => setProjectDescription(e.target.value)}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                rows={4}
+                            />
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
+                            <button
+                                type="button"
+                                onClick={() => setIsProjectModalOpen(false)}
+                                className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                disabled={!selectedWorkspaceId}
+                                className={classNames(
+                                    "rounded-md px-4 py-2 text-sm font-semibold text-white",
+                                    selectedWorkspaceId ? "bg-slate-900 hover:bg-slate-800" : "cursor-not-allowed bg-slate-300"
+                                )}
+                            >
+                                {projectEditId ? "Save Changes" : "Create Project"}
+                            </button>
+                        </div>
+                    </form>
+                </Modal>
+            )}
+
+            {/* Task Detail Modal with Subtasks */}
+            {selectedTask && (
+                <Modal title="Task Details" onClose={closeTaskDetail}>
+                    <div className="space-y-5">
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                    <div className="text-base font-semibold text-slate-900">{selectedTask.title}</div>
+                                    <div className="mt-1 text-sm text-slate-700">{selectedTask.description ?? "No description"}</div>
+                                    <div className="mt-2 text-sm text-slate-700">
+                                        Assignee:{" "}
+                                        <span className="font-semibold text-slate-900">
+                                            {selectedTask.assignee ?? "Unassigned"}
+                                        </span>
+                                    </div>
+                                    <div className="mt-1 text-sm text-slate-700">
+                                        Due Date:{" "}
+                                        <span className="font-semibold text-slate-900">
+                                            {formatDate(selectedTask.dueDate ?? null)}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className={statusPill(selectedTask.status)}>{selectedTask.status}</span>
+                                    <span className={priorityPill(selectedTask.priority)}>{selectedTask.priority}</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleTaskStatus(selectedTask.id)}
+                                        className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                        Toggle Status
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => openEditTaskModal(selectedTask)}
+                                        className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                        Edit
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDeleteTask(selectedTask.id)}
+                                        className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                                    >
+                                        Delete
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Subtasks */}
+                        <div>
+                            <div className="flex items-center justify-between">
+                                <h4 className="text-sm font-semibold text-slate-900">Subtasks</h4>
+                                <div className="text-xs text-slate-500">
+                                    {selectedTaskSubtasks.length} subtask(s)
+                                </div>
+                            </div>
+
+                            <div className="mt-3 space-y-2">
+                                {selectedTaskSubtasks.length === 0 ? (
+                                    <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-600">
+                                        No subtasks yet. Add one below.
+                                    </div>
+                                ) : (
+                                    selectedTaskSubtasks.map((st) => (
+                                        <div
+                                            key={st.id}
+                                            className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white p-3"
+                                        >
+                                            <label className="flex flex-1 items-center gap-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={st.status === "Done"}
+                                                    onChange={(e) => toggleSubtaskDone(st, e.target.checked)}
+                                                    className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900/20"
+                                                />
+                                                <div className="min-w-0">
+                                                    <div className="truncate text-sm font-semibold text-slate-900">{st.title}</div>
+                                                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                        <span className={statusPill(st.status)}>{st.status}</span>
+                                                        <span className={priorityPill(st.priority)}>{st.priority}</span>
+                                                        <span className="text-xs text-slate-600">
+                                                            Due: <span className="font-semibold text-slate-900">{formatDate(st.dueDate ?? null)}</span>
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </label>
+
+                                            <button
+                                                type="button"
+                                                onClick={() => handleDeleteTask(st.id)}
+                                                className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                                            >
+                                                Delete
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+
+                            {/* Add subtask */}
+                            <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+                                <div className="text-sm font-semibold text-slate-900">Add Subtask</div>
+                                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                    <div className="sm:col-span-2">
+                                        <label className="block text-sm font-medium text-slate-700">Title</label>
+                                        <input
+                                            value={newSubtaskTitle}
+                                            onChange={(e) => setNewSubtaskTitle(e.target.value)}
+                                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                            placeholder="Subtask title..."
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700">Assignee</label>
+                                        <input
+                                            value={newSubtaskAssignee}
+                                            onChange={(e) => setNewSubtaskAssignee(e.target.value)}
+                                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                            placeholder="e.g., Ali"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700">Due Date</label>
+                                        <input
+                                            type="date"
+                                            value={newSubtaskDueDate}
+                                            onChange={(e) => setNewSubtaskDueDate(e.target.value)}
+                                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700">Priority</label>
+                                        <select
+                                            value={newSubtaskPriority}
+                                            onChange={(e) => setNewSubtaskPriority(e.target.value as TaskPriority)}
+                                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                        >
+                                            <option value="Low">Low</option>
+                                            <option value="Medium">Medium</option>
+                                            <option value="High">High</option>
+                                        </select>
+                                    </div>
+
+                                    <div className="flex items-end">
+                                        <button
+                                            type="button"
+                                            onClick={addSubtask}
+                                            className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                                        >
+                                            Add Subtask
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </Modal>
+            )}
+        </div>
+    );
 };
 
 export default Workspaces;
+
+/**
+ * Utility hook-like helper to avoid re-creating tasksForCalendarDate closures
+ * while keeping Workspaces.tsx single-file and explicit.
+ */
+function useCallbackForTasks<T>(
+    tasks: T[],
+    fn: (date: Date) => T[]
+): (date: Date) => T[] {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return React.useMemo(() => fn, [tasks]); // tasks dependency rebinds when tasks change
+}

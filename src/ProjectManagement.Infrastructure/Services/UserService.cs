@@ -1,4 +1,5 @@
 ﻿#nullable enable
+using BCrypt.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -31,7 +32,9 @@ public sealed class UserService : IUserService
             .Include(u => u.Role)
             .FirstOrDefaultAsync(u => !u.IsDeleted && u.Email == request.Email);
 
-        if (user is null || user.PasswordHash != request.Password)
+        bool isPasswordValid = BCrypt.Net.BCrypt.Verify(request.Password, user?.PasswordHash);
+
+        if (user is null || !isPasswordValid)
             return null;
 
         var roleName = user.Role?.Name ?? DefaultRole;
@@ -132,10 +135,12 @@ public sealed class UserService : IUserService
         if (emailExists)
             throw new InvalidOperationException("A user with this email already exists.");
 
+        string securedHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
+
         var user = new User(
             request.Name,
             request.Email,
-            request.Password,
+            securedHash,
             request.RoleId
         );
 

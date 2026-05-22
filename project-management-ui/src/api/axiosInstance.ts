@@ -1,30 +1,40 @@
 import axios from "axios";
-// Split the strict type declarations into a type-only import statement
 import type { AxiosInstance, InternalAxiosRequestConfig } from "axios";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "https://localhost:44326/api/";
+function normalizeBaseUrl(url: string): string {
+    const trimmed = url.trim();
+    return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+}
+
+const baseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
+
+if (!baseUrl) {
+    throw new Error(
+        "VITE_API_BASE_URL is missing. Add it to your .env file (e.g. VITE_API_BASE_URL=https://your-domain.com/api/)."
+    );
+}
 
 const axiosInstance: AxiosInstance = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    "Content-Type": "application/json",
-  },
+    baseURL: normalizeBaseUrl(baseUrl),
+    headers: { "Content-Type": "application/json" },
 });
 
 axiosInstance.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
-    const token = localStorage.getItem("token");
+    (config: InternalAxiosRequestConfig) => {
+        const token = localStorage.getItem("token");
 
-    if (token) {
-      config.headers = config.headers ?? {};
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+        config.headers = config.headers ?? {};
 
-    return config;
-  },
-  (error: any) => Promise.reject(error)
+        if (token) {
+            config.headers.Authorization = `Bearer ${token}`;
+        } else {
+            // ensure we don't send a stale header
+            delete (config.headers as any).Authorization;
+        }
+
+        return config;
+    },
+    (error) => Promise.reject(error)
 );
 
 export default axiosInstance;
-export { API_BASE_URL };

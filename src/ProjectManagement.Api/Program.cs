@@ -35,10 +35,11 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// 3. Configure Swagger to support entering JWT Bearer tokens
+// 3. Configure Swagger to support entering JWT Bearer tokens (All configured safely here)
 builder.Services.AddSwaggerGen(c =>
 {
-    c.SwaggerDoc("v1", new() { Title = "ProjectManagement.Api", Version = "v1" });
+    c.SwaggerDoc("v1", new() { Title = "Project Management API", Version = "v1" });
+
     c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
     {
         Name = "Authorization",
@@ -46,8 +47,9 @@ builder.Services.AddSwaggerGen(c =>
         Scheme = "Bearer",
         BearerFormat = "JWT",
         In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Description = "Enter 'Bearer' followed by a space and your JWT token."
+        Description = "Enter 'Bearer' followed by a space and your JWT token.\n\nExample: \"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\""
     });
+
     c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
     {
         {
@@ -65,26 +67,30 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
     {
-        policy.AllowAnyOrigin()   // Allows requests from any URL/domain
-              .AllowAnyMethod()   // Allows GET, POST, PUT, DELETE, etc.
-              .AllowAnyHeader();  // Allows any headers (Authorization, Content-Type, etc.)
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
     });
 });
 
+// ============== APPLICATION BUILD STEP ==============
 var app = builder.Build();
 
-// 4. Configure the HTTP request pipeline
-if (app.Environment.IsDevelopment())
+// 4. Configure the HTTP request pipeline (No builder.Services calls allowed below here!)
+app.UseSwagger();
+app.UseSwaggerUI(c =>
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
-app.UseMiddleware<CustomExceptionMiddleware>();
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Project Management API v1");
+    // This leaves Swagger accessible at the root or /swagger path on your Plesk live domain
+});
 
+app.UseMiddleware<CustomExceptionMiddleware>();
 app.UseCors("AllowAll");
 app.UseHttpsRedirection();
+
 app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();
