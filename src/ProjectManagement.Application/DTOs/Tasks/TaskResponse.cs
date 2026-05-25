@@ -10,5 +10,6 @@ public sealed record TaskResponse(
     string Title,
     string? Description,
     DateTime? TargetDate,
-    TaskItemStatus Status
+    TaskItemStatus Status,
+    TaskPriority Priority
 );

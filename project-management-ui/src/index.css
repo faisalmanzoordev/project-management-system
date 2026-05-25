@@ -111,3 +111,16 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+a,
+button,
+select,
+input[type="submit"],
+input[type="button"] {
+    cursor: pointer !important;
+}
+
+/* Ensure disabled buttons show a 'not-allowed' circle instead */
+button:disabled,
+input:disabled {
+    cursor: not-allowed !important;
+}

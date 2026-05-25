@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
+import Modal from "../components/Modal";
 import { useApp } from "../context/AppContext";
-import type { TaskItem, TaskPriority, TaskStatus } from "../context/AppContext";
+import type { AppUser, TaskItem, TaskPriority, TaskStatus } from "../context/AppContext";
 
 type ViewMode = "table" | "kanban" | "calendar";
 
@@ -23,6 +24,13 @@ function toDateInputValue(dateIso?: string | null): string {
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
+}
+
+function fromDateInputValue(dateInput: string): string | null {
+    if (!dateInput.trim()) return null;
+    const d = new Date(`${dateInput}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
 }
 
 function statusPill(status: TaskStatus): string {
@@ -53,42 +61,10 @@ function addMonths(d: Date, delta: number): Date {
     return new Date(d.getFullYear(), d.getMonth() + delta, 1);
 }
 
-type ModalProps = {
-    title: string;
-    children: React.ReactNode;
-    onClose: () => void;
-};
-
-const Modal: React.FC<ModalProps> = ({ title, children, onClose }) => {
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <button
-                type="button"
-                className="absolute inset-0 bg-slate-900/40"
-                onClick={onClose}
-                aria-label="Close modal overlay"
-            />
-            <div className="relative w-full max-w-2xl rounded-lg border border-slate-200 bg-white shadow-xl">
-                <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-                    <h3 className="text-base font-semibold text-slate-900">{title}</h3>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-                    >
-                        Close
-                    </button>
-                </div>
-                <div className="px-5 py-4">{children}</div>
-            </div>
-        </div>
-    );
-};
-
 type TaskFormState = {
     title: string;
     description: string;
-    assignee: string;
+    assigneeId: number | null;
     priority: TaskPriority;
     status: TaskStatus;
     dueDate: string; // yyyy-mm-dd
@@ -97,14 +73,19 @@ type TaskFormState = {
 const defaultTaskForm: TaskFormState = {
     title: "",
     description: "",
-    assignee: "",
+    assigneeId: null,
     priority: "Medium",
     status: "To Do",
     dueDate: "",
 };
 
+function userOptionLabel(u: AppUser): string {
+    return `${u.name} (${u.email})`;
+}
+
 const Workspaces: React.FC = () => {
     const {
+        users,
         workspaces,
         projects,
         tasks,
@@ -152,8 +133,9 @@ const Workspaces: React.FC = () => {
     const [projectName, setProjectName] = useState("");
     const [projectDescription, setProjectDescription] = useState("");
 
+    // Subtask create
     const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
-    const [newSubtaskAssignee, setNewSubtaskAssignee] = useState("");
+    const [newSubtaskAssigneeId, setNewSubtaskAssigneeId] = useState<number | null>(null);
     const [newSubtaskPriority, setNewSubtaskPriority] = useState<TaskPriority>("Medium");
     const [newSubtaskDueDate, setNewSubtaskDueDate] = useState("");
 
@@ -167,17 +149,6 @@ const Workspaces: React.FC = () => {
         [projects, selectedProjectId]
     );
 
-    const topLevelTasks = useMemo(() => tasks.filter((t) => !t.parentTaskId), [tasks]);
-
-    const filteredTasks = useMemo(() => {
-        const q = search.trim().toLowerCase();
-        if (!q) return topLevelTasks;
-        return topLevelTasks.filter((t) => {
-            const hay = `${t.title} ${t.description ?? ""} ${t.assignee ?? ""}`.toLowerCase();
-            return hay.includes(q);
-        });
-    }, [topLevelTasks, search]);
-
     const taskById = useMemo(() => {
         const map = new Map<number, TaskItem>();
         for (const t of tasks) map.set(t.id, t);
@@ -189,6 +160,18 @@ const Workspaces: React.FC = () => {
         [selectedTaskId, taskById]
     );
 
+    const topLevelTasks = useMemo(() => tasks.filter((t) => !t.parentTaskId), [tasks]);
+
+    const filteredTasks = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        if (!q) return topLevelTasks;
+
+        return topLevelTasks.filter((t) => {
+            const hay = `${t.title} ${t.description ?? ""} ${t.assigneeName ?? ""}`.toLowerCase();
+            return hay.includes(q);
+        });
+    }, [topLevelTasks, search]);
+
     const selectedTaskSubtasks = useMemo(() => {
         if (!selectedTask) return [];
         return tasks
@@ -196,19 +179,20 @@ const Workspaces: React.FC = () => {
             .sort((a, b) => a.id - b.id);
     }, [tasks, selectedTask]);
 
-    const kanbanColumns = useMemo(() => {
-        return [
+    const kanbanColumns = useMemo(
+        () => [
             { title: "To Do", status: "To Do" as TaskStatus },
             { title: "In Progress", status: "In Progress" as TaskStatus },
             { title: "Done", status: "Done" as TaskStatus },
-        ];
-    }, []);
+        ],
+        []
+    );
 
     const calendarCells = useMemo(() => {
         const start = startOfMonth(calendarMonth);
         const end = endOfMonth(calendarMonth);
 
-        const startWeekday = start.getDay(); // 0-6
+        const startWeekday = start.getDay();
         const totalDays = end.getDate();
 
         const cells: Array<{ date: Date | null }> = [];
@@ -222,16 +206,19 @@ const Workspaces: React.FC = () => {
         return cells;
     }, [calendarMonth]);
 
-    const tasksForCalendarDate = useCallbackForTasks(tasks, (date: Date) => {
-        return tasks
-            .filter((t) => t.dueDate)
-            .filter((t) => {
-                const d = new Date(t.dueDate!);
-                if (Number.isNaN(d.getTime())) return false;
-                return sameDay(d, date);
-            })
-            .sort((a, b) => a.title.localeCompare(b.title));
-    });
+    const tasksForCalendarDate = useCallback(
+        (date: Date) => {
+            return tasks
+                .filter((t) => t.dueDate)
+                .filter((t) => {
+                    const d = new Date(t.dueDate!);
+                    if (Number.isNaN(d.getTime())) return false;
+                    return sameDay(d, date);
+                })
+                .sort((a, b) => a.title.localeCompare(b.title));
+        },
+        [tasks]
+    );
 
     function openCreateTaskModal() {
         if (!selectedProjectId) return;
@@ -249,7 +236,7 @@ const Workspaces: React.FC = () => {
         setTaskForm({
             title: task.title,
             description: task.description ?? "",
-            assignee: task.assignee ?? "",
+            assigneeId: task.assigneeId ?? null,
             priority: task.priority,
             status: task.status,
             dueDate: toDateInputValue(task.dueDate ?? null),
@@ -261,7 +248,7 @@ const Workspaces: React.FC = () => {
     function openTaskDetail(taskId: number) {
         setSelectedTaskId(taskId);
         setNewSubtaskTitle("");
-        setNewSubtaskAssignee("");
+        setNewSubtaskAssigneeId(null);
         setNewSubtaskPriority("Medium");
         setNewSubtaskDueDate("");
     }
@@ -273,10 +260,9 @@ const Workspaces: React.FC = () => {
     async function handleSubmitTaskForm(e: React.FormEvent) {
         e.preventDefault();
         if (!selectedProjectId) return;
-
-        const dueIso = taskForm.dueDate ? new Date(`${taskForm.dueDate}T00:00:00`).toISOString() : null;
-
         if (!taskForm.title.trim()) return;
+
+        const dueIso = fromDateInputValue(taskForm.dueDate);
 
         if (!isTaskEditMode) {
             await createTask({
@@ -287,7 +273,7 @@ const Workspaces: React.FC = () => {
                 status: taskForm.status,
                 priority: taskForm.priority,
                 dueDate: dueIso,
-                assignee: taskForm.assignee || null,
+                assigneeId: taskForm.assigneeId ?? null,
             });
         } else if (taskEditId) {
             const current = taskById.get(taskEditId);
@@ -301,7 +287,7 @@ const Workspaces: React.FC = () => {
                 status: taskForm.status,
                 priority: taskForm.priority,
                 dueDate: dueIso,
-                assignee: taskForm.assignee || null,
+                assigneeId: taskForm.assigneeId ?? null,
             });
         }
 
@@ -420,7 +406,7 @@ const Workspaces: React.FC = () => {
             status: newStatus,
             priority: subtask.priority,
             dueDate: subtask.dueDate ?? null,
-            assignee: subtask.assignee ?? null,
+            assigneeId: subtask.assigneeId ?? null,
         });
     }
 
@@ -428,9 +414,7 @@ const Workspaces: React.FC = () => {
         if (!selectedProjectId || !selectedTask) return;
         if (!newSubtaskTitle.trim()) return;
 
-        const dueIso = newSubtaskDueDate
-            ? new Date(`${newSubtaskDueDate}T00:00:00`).toISOString()
-            : null;
+        const dueIso = fromDateInputValue(newSubtaskDueDate);
 
         await createTask({
             projectId: selectedProjectId,
@@ -440,11 +424,11 @@ const Workspaces: React.FC = () => {
             status: "To Do",
             priority: newSubtaskPriority,
             dueDate: dueIso,
-            assignee: newSubtaskAssignee || null,
+            assigneeId: newSubtaskAssigneeId ?? null,
         });
 
         setNewSubtaskTitle("");
-        setNewSubtaskAssignee("");
+        setNewSubtaskAssigneeId(null);
         setNewSubtaskPriority("Medium");
         setNewSubtaskDueDate("");
     }
@@ -671,7 +655,6 @@ const Workspaces: React.FC = () => {
                 </div>
             )}
 
-            {/* Content */}
             {!isLoading && !error && (
                 <>
                     {/* TABLE VIEW */}
@@ -682,8 +665,10 @@ const Workspaces: React.FC = () => {
                                     <div>
                                         <div className="text-sm font-semibold text-slate-900">Tasks</div>
                                         <div className="mt-1 text-xs text-slate-500">
-                                            Workspace: <span className="font-medium text-slate-700">{selectedWorkspace?.name ?? "—"}</span>{" "}
-                                            • Project: <span className="font-medium text-slate-700">{selectedProject?.name ?? "—"}</span>
+                                            Workspace:{" "}
+                                            <span className="font-medium text-slate-700">{selectedWorkspace?.name ?? "—"}</span>{" "}
+                                            • Project:{" "}
+                                            <span className="font-medium text-slate-700">{selectedProject?.name ?? "—"}</span>
                                         </div>
                                     </div>
                                     <div className="text-xs text-slate-500">
@@ -750,13 +735,17 @@ const Workspaces: React.FC = () => {
                                                         <div className="max-w-md truncate">{t.description ?? "—"}</div>
                                                     </td>
 
-                                                    <td className="px-4 py-3 text-sm text-slate-700">{t.assignee ?? "Unassigned"}</td>
+                                                    <td className="px-4 py-3 text-sm text-slate-700">
+                                                        {t.assigneeName ?? "Unassigned"}
+                                                    </td>
 
                                                     <td className="px-4 py-3">
                                                         <span className={priorityPill(t.priority)}>{t.priority}</span>
                                                     </td>
 
-                                                    <td className="px-4 py-3 text-sm text-slate-700">{formatDate(t.dueDate ?? null)}</td>
+                                                    <td className="px-4 py-3 text-sm text-slate-700">
+                                                        {formatDate(t.dueDate ?? null)}
+                                                    </td>
 
                                                     <td className="px-4 py-3">
                                                         <div className="flex flex-wrap items-center gap-2">
@@ -841,12 +830,18 @@ const Workspaces: React.FC = () => {
                                                         <div className="mt-3 flex items-center justify-between">
                                                             <span className={priorityPill(t.priority)}>{t.priority}</span>
                                                             <div className="text-xs text-slate-600">
-                                                                Due: <span className="font-semibold text-slate-900">{formatDate(t.dueDate ?? null)}</span>
+                                                                Due:{" "}
+                                                                <span className="font-semibold text-slate-900">
+                                                                    {formatDate(t.dueDate ?? null)}
+                                                                </span>
                                                             </div>
                                                         </div>
 
                                                         <div className="mt-2 text-xs text-slate-600">
-                                                            Assignee: <span className="font-semibold text-slate-900">{t.assignee ?? "Unassigned"}</span>
+                                                            Assignee:{" "}
+                                                            <span className="font-semibold text-slate-900">
+                                                                {t.assigneeName ?? "Unassigned"}
+                                                            </span>
                                                         </div>
                                                     </button>
                                                 ))
@@ -959,193 +954,213 @@ const Workspaces: React.FC = () => {
             )}
 
             {/* Task Create/Edit Modal */}
-            {isTaskModalOpen && (
-                <Modal title={isTaskEditMode ? "Edit Task" : "Create New Task"} onClose={() => setIsTaskModalOpen(false)}>
-                    <form onSubmit={handleSubmitTaskForm} className="space-y-4">
-                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                            <div className="sm:col-span-2">
-                                <label className="block text-sm font-medium text-slate-700">Title</label>
-                                <input
-                                    value={taskForm.title}
-                                    onChange={(e) => setTaskForm((p) => ({ ...p, title: e.target.value }))}
-                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                    required
-                                />
-                            </div>
-
-                            <div className="sm:col-span-2">
-                                <label className="block text-sm font-medium text-slate-700">Description</label>
-                                <textarea
-                                    value={taskForm.description}
-                                    onChange={(e) => setTaskForm((p) => ({ ...p, description: e.target.value }))}
-                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                    rows={4}
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Assignee</label>
-                                <input
-                                    value={taskForm.assignee}
-                                    onChange={(e) => setTaskForm((p) => ({ ...p, assignee: e.target.value }))}
-                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                    placeholder="e.g., Faisal"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Due Date</label>
-                                <input
-                                    type="date"
-                                    value={taskForm.dueDate}
-                                    onChange={(e) => setTaskForm((p) => ({ ...p, dueDate: e.target.value }))}
-                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Priority</label>
-                                <select
-                                    value={taskForm.priority}
-                                    onChange={(e) => setTaskForm((p) => ({ ...p, priority: e.target.value as TaskPriority }))}
-                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                >
-                                    <option value="Low">Low</option>
-                                    <option value="Medium">Medium</option>
-                                    <option value="High">High</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Status</label>
-                                <select
-                                    value={taskForm.status}
-                                    onChange={(e) => setTaskForm((p) => ({ ...p, status: e.target.value as TaskStatus }))}
-                                    className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                >
-                                    <option value="To Do">To Do</option>
-                                    <option value="In Progress">In Progress</option>
-                                    <option value="Done">Done</option>
-                                </select>
-                            </div>
+            <Modal
+                title={isTaskEditMode ? "Edit Task" : "Create New Task"}
+                isOpen={isTaskModalOpen}
+                onClose={() => setIsTaskModalOpen(false)}
+                maxWidthClassName="max-w-3xl"
+            >
+                <form onSubmit={handleSubmitTaskForm} className="space-y-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                            <label className="block text-sm font-medium text-slate-700">Title</label>
+                            <input
+                                value={taskForm.title}
+                                onChange={(e) => setTaskForm((p) => ({ ...p, title: e.target.value }))}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                required
+                            />
                         </div>
 
-                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
-                            <button
-                                type="button"
-                                onClick={() => setIsTaskModalOpen(false)}
-                                className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="submit"
-                                disabled={!selectedProjectId}
-                                className={classNames(
-                                    "rounded-md px-4 py-2 text-sm font-semibold text-white",
-                                    selectedProjectId ? "bg-slate-900 hover:bg-slate-800" : "cursor-not-allowed bg-slate-300"
-                                )}
-                            >
-                                {isTaskEditMode ? "Save Changes" : "Create Task"}
-                            </button>
+                        <div className="sm:col-span-2">
+                            <label className="block text-sm font-medium text-slate-700">Description</label>
+                            <textarea
+                                value={taskForm.description}
+                                onChange={(e) => setTaskForm((p) => ({ ...p, description: e.target.value }))}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                                rows={4}
+                            />
                         </div>
-                    </form>
-                </Modal>
-            )}
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Assignee</label>
+                            <select
+                                value={taskForm.assigneeId ?? ""}
+                                onChange={(e) => {
+                                    const v = e.target.value ? Number(e.target.value) : null;
+                                    setTaskForm((p) => ({ ...p, assigneeId: v }));
+                                }}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            >
+                                <option value="">Unassigned</option>
+                                {users.map((u) => (
+                                    <option key={u.id} value={u.id}>
+                                        {userOptionLabel(u)}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Due Date</label>
+                            <input
+                                type="date"
+                                value={taskForm.dueDate}
+                                onChange={(e) => setTaskForm((p) => ({ ...p, dueDate: e.target.value }))}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Priority</label>
+                            <select
+                                value={taskForm.priority}
+                                onChange={(e) => setTaskForm((p) => ({ ...p, priority: e.target.value as TaskPriority }))}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            >
+                                <option value="Low">Low</option>
+                                <option value="Medium">Medium</option>
+                                <option value="High">High</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Status</label>
+                            <select
+                                value={taskForm.status}
+                                onChange={(e) => setTaskForm((p) => ({ ...p, status: e.target.value as TaskStatus }))}
+                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            >
+                                <option value="To Do">To Do</option>
+                                <option value="In Progress">In Progress</option>
+                                <option value="Done">Done</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
+                        <button
+                            type="button"
+                            onClick={() => setIsTaskModalOpen(false)}
+                            className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={!selectedProjectId}
+                            className={classNames(
+                                "rounded-md px-4 py-2 text-sm font-semibold text-white",
+                                selectedProjectId ? "bg-slate-900 hover:bg-slate-800" : "cursor-not-allowed bg-slate-300"
+                            )}
+                        >
+                            {isTaskEditMode ? "Save Changes" : "Create Task"}
+                        </button>
+                    </div>
+                </form>
+            </Modal>
 
             {/* Workspace Create/Edit Modal */}
-            {isWorkspaceModalOpen && (
-                <Modal title={workspaceEditId ? "Edit Workspace" : "Create Workspace"} onClose={() => setIsWorkspaceModalOpen(false)}>
-                    <form onSubmit={handleSubmitWorkspace} className="space-y-4">
-                        <div>
-                            <label className="block text-sm font-medium text-slate-700">Name</label>
-                            <input
-                                value={workspaceName}
-                                onChange={(e) => setWorkspaceName(e.target.value)}
-                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                required
-                            />
-                        </div>
+            <Modal
+                title={workspaceEditId ? "Edit Workspace" : "Create Workspace"}
+                isOpen={isWorkspaceModalOpen}
+                onClose={() => setIsWorkspaceModalOpen(false)}
+                maxWidthClassName="max-w-2xl"
+            >
+                <form onSubmit={handleSubmitWorkspace} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700">Name</label>
+                        <input
+                            value={workspaceName}
+                            onChange={(e) => setWorkspaceName(e.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            required
+                        />
+                    </div>
 
-                        <div>
-                            <label className="block text-sm font-medium text-slate-700">Description</label>
-                            <textarea
-                                value={workspaceDescription}
-                                onChange={(e) => setWorkspaceDescription(e.target.value)}
-                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                rows={4}
-                            />
-                        </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700">Description</label>
+                        <textarea
+                            value={workspaceDescription}
+                            onChange={(e) => setWorkspaceDescription(e.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            rows={4}
+                        />
+                    </div>
 
-                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
-                            <button
-                                type="button"
-                                onClick={() => setIsWorkspaceModalOpen(false)}
-                                className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="submit"
-                                className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                            >
-                                {workspaceEditId ? "Save Changes" : "Create Workspace"}
-                            </button>
-                        </div>
-                    </form>
-                </Modal>
-            )}
+                    <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
+                        <button
+                            type="button"
+                            onClick={() => setIsWorkspaceModalOpen(false)}
+                            className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                        >
+                            Cancel
+                        </button>
+                        <button type="submit" className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+                            {workspaceEditId ? "Save Changes" : "Create Workspace"}
+                        </button>
+                    </div>
+                </form>
+            </Modal>
 
             {/* Project Create/Edit Modal */}
-            {isProjectModalOpen && (
-                <Modal title={projectEditId ? "Edit Project" : "Create Project"} onClose={() => setIsProjectModalOpen(false)}>
-                    <form onSubmit={handleSubmitProject} className="space-y-4">
-                        <div>
-                            <label className="block text-sm font-medium text-slate-700">Name</label>
-                            <input
-                                value={projectName}
-                                onChange={(e) => setProjectName(e.target.value)}
-                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                required
-                            />
-                        </div>
+            <Modal
+                title={projectEditId ? "Edit Project" : "Create Project"}
+                isOpen={isProjectModalOpen}
+                onClose={() => setIsProjectModalOpen(false)}
+                maxWidthClassName="max-w-2xl"
+            >
+                <form onSubmit={handleSubmitProject} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700">Name</label>
+                        <input
+                            value={projectName}
+                            onChange={(e) => setProjectName(e.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            required
+                        />
+                    </div>
 
-                        <div>
-                            <label className="block text-sm font-medium text-slate-700">Description</label>
-                            <textarea
-                                value={projectDescription}
-                                onChange={(e) => setProjectDescription(e.target.value)}
-                                className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                rows={4}
-                            />
-                        </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700">Description</label>
+                        <textarea
+                            value={projectDescription}
+                            onChange={(e) => setProjectDescription(e.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                            rows={4}
+                        />
+                    </div>
 
-                        <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
-                            <button
-                                type="button"
-                                onClick={() => setIsProjectModalOpen(false)}
-                                className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="submit"
-                                disabled={!selectedWorkspaceId}
-                                className={classNames(
-                                    "rounded-md px-4 py-2 text-sm font-semibold text-white",
-                                    selectedWorkspaceId ? "bg-slate-900 hover:bg-slate-800" : "cursor-not-allowed bg-slate-300"
-                                )}
-                            >
-                                {projectEditId ? "Save Changes" : "Create Project"}
-                            </button>
-                        </div>
-                    </form>
-                </Modal>
-            )}
+                    <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-4">
+                        <button
+                            type="button"
+                            onClick={() => setIsProjectModalOpen(false)}
+                            className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={!selectedWorkspaceId}
+                            className={classNames(
+                                "rounded-md px-4 py-2 text-sm font-semibold text-white",
+                                selectedWorkspaceId ? "bg-slate-900 hover:bg-slate-800" : "cursor-not-allowed bg-slate-300"
+                            )}
+                        >
+                            {projectEditId ? "Save Changes" : "Create Project"}
+                        </button>
+                    </div>
+                </form>
+            </Modal>
 
             {/* Task Detail Modal with Subtasks */}
-            {selectedTask && (
-                <Modal title="Task Details" onClose={closeTaskDetail}>
+            <Modal
+                title="Task Details"
+                isOpen={Boolean(selectedTask)}
+                onClose={closeTaskDetail}
+                maxWidthClassName="max-w-4xl"
+            >
+                {selectedTask && (
                     <div className="space-y-5">
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1155,7 +1170,7 @@ const Workspaces: React.FC = () => {
                                     <div className="mt-2 text-sm text-slate-700">
                                         Assignee:{" "}
                                         <span className="font-semibold text-slate-900">
-                                            {selectedTask.assignee ?? "Unassigned"}
+                                            {selectedTask.assigneeName ?? "Unassigned"}
                                         </span>
                                     </div>
                                     <div className="mt-1 text-sm text-slate-700">
@@ -1169,6 +1184,7 @@ const Workspaces: React.FC = () => {
                                 <div className="flex flex-wrap items-center gap-2">
                                     <span className={statusPill(selectedTask.status)}>{selectedTask.status}</span>
                                     <span className={priorityPill(selectedTask.priority)}>{selectedTask.priority}</span>
+
                                     <button
                                         type="button"
                                         onClick={() => toggleTaskStatus(selectedTask.id)}
@@ -1176,13 +1192,18 @@ const Workspaces: React.FC = () => {
                                     >
                                         Toggle Status
                                     </button>
+
                                     <button
                                         type="button"
-                                        onClick={() => openEditTaskModal(selectedTask)}
+                                        onClick={() => {
+                                            closeTaskDetail();
+                                            openEditTaskModal(selectedTask);
+                                        }}
                                         className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
                                     >
                                         Edit
                                     </button>
+
                                     <button
                                         type="button"
                                         onClick={() => handleDeleteTask(selectedTask.id)}
@@ -1198,9 +1219,7 @@ const Workspaces: React.FC = () => {
                         <div>
                             <div className="flex items-center justify-between">
                                 <h4 className="text-sm font-semibold text-slate-900">Subtasks</h4>
-                                <div className="text-xs text-slate-500">
-                                    {selectedTaskSubtasks.length} subtask(s)
-                                </div>
+                                <div className="text-xs text-slate-500">{selectedTaskSubtasks.length} subtask(s)</div>
                             </div>
 
                             <div className="mt-3 space-y-2">
@@ -1210,10 +1229,7 @@ const Workspaces: React.FC = () => {
                                     </div>
                                 ) : (
                                     selectedTaskSubtasks.map((st) => (
-                                        <div
-                                            key={st.id}
-                                            className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white p-3"
-                                        >
+                                        <div key={st.id} className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white p-3">
                                             <label className="flex flex-1 items-center gap-3">
                                                 <input
                                                     type="checkbox"
@@ -1228,6 +1244,9 @@ const Workspaces: React.FC = () => {
                                                         <span className={priorityPill(st.priority)}>{st.priority}</span>
                                                         <span className="text-xs text-slate-600">
                                                             Due: <span className="font-semibold text-slate-900">{formatDate(st.dueDate ?? null)}</span>
+                                                        </span>
+                                                        <span className="text-xs text-slate-600">
+                                                            Assignee: <span className="font-semibold text-slate-900">{st.assigneeName ?? "Unassigned"}</span>
                                                         </span>
                                                     </div>
                                                 </div>
@@ -1248,6 +1267,7 @@ const Workspaces: React.FC = () => {
                             {/* Add subtask */}
                             <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
                                 <div className="text-sm font-semibold text-slate-900">Add Subtask</div>
+
                                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                                     <div className="sm:col-span-2">
                                         <label className="block text-sm font-medium text-slate-700">Title</label>
@@ -1261,12 +1281,21 @@ const Workspaces: React.FC = () => {
 
                                     <div>
                                         <label className="block text-sm font-medium text-slate-700">Assignee</label>
-                                        <input
-                                            value={newSubtaskAssignee}
-                                            onChange={(e) => setNewSubtaskAssignee(e.target.value)}
+                                        <select
+                                            value={newSubtaskAssigneeId ?? ""}
+                                            onChange={(e) => {
+                                                const v = e.target.value ? Number(e.target.value) : null;
+                                                setNewSubtaskAssigneeId(v);
+                                            }}
                                             className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
-                                            placeholder="e.g., Ali"
-                                        />
+                                        >
+                                            <option value="">Unassigned</option>
+                                            {users.map((u) => (
+                                                <option key={u.id} value={u.id}>
+                                                    {userOptionLabel(u)}
+                                                </option>
+                                            ))}
+                                        </select>
                                     </div>
 
                                     <div>
@@ -1305,22 +1334,10 @@ const Workspaces: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                </Modal>
-            )}
+                )}
+            </Modal>
         </div>
     );
 };
 
 export default Workspaces;
-
-/**
- * Utility hook-like helper to avoid re-creating tasksForCalendarDate closures
- * while keeping Workspaces.tsx single-file and explicit.
- */
-function useCallbackForTasks<T>(
-    tasks: T[],
-    fn: (date: Date) => T[]
-): (date: Date) => T[] {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    return React.useMemo(() => fn, [tasks]); // tasks dependency rebinds when tasks change
-}

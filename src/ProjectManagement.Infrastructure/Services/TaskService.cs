@@ -31,7 +31,8 @@ public sealed class TaskService : ITaskService
                 t.Title,
                 t.Description,
                 t.TargetDate,
-                t.Status
+                t.Status,
+                t.Priority
             ))
             .ToListAsync(cancellationToken);
     }
@@ -48,7 +49,8 @@ public sealed class TaskService : ITaskService
                 t.Title,
                 t.Description,
                 t.TargetDate,
-                t.Status
+                t.Status,
+                t.Priority
             ))
             .FirstOrDefaultAsync(cancellationToken);
     }
@@ -77,7 +79,8 @@ public sealed class TaskService : ITaskService
 
         var entity = new TaskEntity(request.ProjectId, request.Title, request.Description);
         entity.SetTargetDate(request.TargetDate);
-        entity.SetStatus(request.Status);
+        entity.SetStatus(request.ParsedStatus);
+        entity.SetPriority(request.ParsedPriority);
         entity.SetParent(parentTracked);
 
         await _context.Tasks.AddAsync(entity, cancellationToken);
@@ -90,7 +93,8 @@ public sealed class TaskService : ITaskService
             entity.Title,
             entity.Description,
             entity.TargetDate,
-            entity.Status
+            entity.Status,
+            entity.Priority
         );
     }
 
@@ -128,7 +132,8 @@ public sealed class TaskService : ITaskService
         entity.SetTitle(request.Title);
         entity.SetDescription(request.Description);
         entity.SetTargetDate(request.TargetDate);
-        entity.SetStatus(request.Status);
+        entity.SetStatus(request.ParsedStatus);
+        entity.SetPriority(request.ParsedPriority);
         entity.SetParent(parentTracked);
 
         await _context.SaveChangesAsync(cancellationToken);
@@ -140,7 +145,8 @@ public sealed class TaskService : ITaskService
             entity.Title,
             entity.Description,
             entity.TargetDate,
-            entity.Status
+            entity.Status,
+            entity.Priority
         );
     }
 

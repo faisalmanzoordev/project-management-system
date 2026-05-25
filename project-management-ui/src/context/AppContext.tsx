@@ -24,6 +24,14 @@ export type Project = {
 export type TaskStatus = "To Do" | "In Progress" | "Done";
 export type TaskPriority = "Low" | "Medium" | "High";
 
+export type AppUser = {
+    id: number;
+    name: string;
+    email: string;
+    roleId?: number;
+    role?: string;
+};
+
 export type TaskItem = {
     id: number;
     projectId: number;
@@ -32,8 +40,9 @@ export type TaskItem = {
     description?: string | null;
     status: TaskStatus;
     priority: TaskPriority;
-    dueDate?: string | null; // ISO or yyyy-mm-dd
-    assignee?: string | null;
+    dueDate?: string | null; // ISO
+    assigneeId?: number | null;
+    assigneeName?: string | null;
 };
 
 export type WorkspaceUpsertRequest = {
@@ -54,12 +63,20 @@ export type TaskUpsertRequest = {
     description?: string | null;
     status: TaskStatus;
     priority: TaskPriority;
-    dueDate?: string | null;
-    assignee?: string | null;
+    dueDate?: string | null; // ISO
+    assigneeId?: number | null; // used for assignment endpoints ONLY (not sent in task payload)
 };
 
 type ApiWorkspace = Workspace;
 type ApiProject = Project;
+
+type ApiUser = {
+    id: number;
+    name: string;
+    email: string;
+    roleId?: number;
+    role?: string;
+};
 
 type ApiTask = {
     id: number;
@@ -68,37 +85,35 @@ type ApiTask = {
     title: string;
     description?: string | null;
 
-    // backend may return different names:
+    // backend may use either naming
     dueDate?: string | null;
     targetDate?: string | null;
 
     status: string | number;
     priority?: string | number;
 
-    assignee?: string | null;
+    // new fields
+    assigneeId?: number | null;
+    assigneeName?: string | null;
 };
 
 function normalizeTaskStatus(value: string | number): TaskStatus {
     if (typeof value === "number") {
-        // If backend uses enum ints: attempt common mapping
-        // 0 Pending -> To Do, 1 InProgress -> In Progress, 2 Done -> Done, others -> To Do
+        // common mapping if backend returns enum int
         if (value === 1) return "In Progress";
         if (value === 2) return "Done";
         return "To Do";
     }
 
     const s = value.trim().toLowerCase();
-
     if (s === "to do" || s === "todo" || s === "pending") return "To Do";
     if (s === "in progress" || s === "inprogress") return "In Progress";
     if (s === "done" || s === "completed" || s === "complete") return "Done";
-
     return "To Do";
 }
 
 function normalizePriority(value: string | number | undefined): TaskPriority {
     if (value === undefined || value === null) return "Medium";
-
     if (typeof value === "number") {
         if (value <= 0) return "Low";
         if (value === 1) return "Medium";
@@ -118,12 +133,10 @@ function normalizeDueDate(api: ApiTask): string | null {
     const d = new Date(raw);
     if (Number.isNaN(d.getTime())) return null;
 
-    // keep as ISO string
     return d.toISOString();
 }
 
 function toApiStatus(status: TaskStatus): string {
-    // Use the requested canonical strings
     return status;
 }
 
@@ -131,7 +144,17 @@ function toApiPriority(priority: TaskPriority): string {
     return priority;
 }
 
+function safeNumber(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+    if (typeof value === "string" && value.trim()) {
+        const n = Number(value);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    return null;
+}
+
 type AppContextValue = {
+    users: AppUser[];
     workspaces: Workspace[];
     projects: Project[];
     tasks: TaskItem[];
@@ -171,6 +194,7 @@ const LS_SELECTED_WORKSPACE = "selectedWorkspaceId";
 const LS_SELECTED_PROJECT = "selectedProjectId";
 
 export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
+    const [users, setUsers] = useState<AppUser[]>([]);
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
     const [projects, setProjects] = useState<Project[]>([]);
     const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -183,26 +207,33 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
 
     const setSelectedWorkspaceId = useCallback((workspaceId: number | null) => {
         _setSelectedWorkspaceId(workspaceId);
-        if (workspaceId === null) {
-            localStorage.removeItem(LS_SELECTED_WORKSPACE);
-        } else {
-            localStorage.setItem(LS_SELECTED_WORKSPACE, String(workspaceId));
-        }
+        if (workspaceId === null) localStorage.removeItem(LS_SELECTED_WORKSPACE);
+        else localStorage.setItem(LS_SELECTED_WORKSPACE, String(workspaceId));
     }, []);
 
     const setSelectedProjectId = useCallback((projectId: number | null) => {
         _setSelectedProjectId(projectId);
-        if (projectId === null) {
-            localStorage.removeItem(LS_SELECTED_PROJECT);
-        } else {
-            localStorage.setItem(LS_SELECTED_PROJECT, String(projectId));
-        }
+        if (projectId === null) localStorage.removeItem(LS_SELECTED_PROJECT);
+        else localStorage.setItem(LS_SELECTED_PROJECT, String(projectId));
+    }, []);
+
+    const fetchUsers = useCallback(async () => {
+        setError(null);
+        const res = await axiosInstance.get<ApiUser[]>("users");
+        const mapped: AppUser[] = res.data.map((u) => ({
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            roleId: u.roleId,
+            role: u.role,
+        }));
+        setUsers(mapped.sort((a, b) => a.name.localeCompare(b.name)));
     }, []);
 
     const fetchWorkspaces = useCallback(async () => {
         setError(null);
         const res = await axiosInstance.get<ApiWorkspace[]>("workspaces");
-        setWorkspaces(res.data);
+        setWorkspaces(res.data.sort((a, b) => a.name.localeCompare(b.name)));
     }, []);
 
     const createWorkspace = useCallback(async (request: WorkspaceUpsertRequest) => {
@@ -231,10 +262,8 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
         async (id: number) => {
             setError(null);
             await axiosInstance.delete(`workspaces/${id}`);
-
             setWorkspaces((prev) => prev.filter((w) => w.id !== id));
 
-            // Clear selection if needed
             if (selectedWorkspaceId === id) {
                 setSelectedWorkspaceId(null);
                 setSelectedProjectId(null);
@@ -242,63 +271,64 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
                 setTasks([]);
             }
         },
-        [selectedWorkspaceId, setSelectedWorkspaceId, setSelectedProjectId]
+        [selectedWorkspaceId, setSelectedProjectId, setSelectedWorkspaceId]
     );
 
     const fetchProjectsByWorkspaceId = useCallback(async (workspaceId: number) => {
         setError(null);
 
-        // Prefer server-side filtering (if supported); fallback to client filtering.
-        const res = await axiosInstance.get<ApiProject[]>("projects", {
-            params: { workspaceId },
-        });
-
+        // If backend supports ?workspaceId= it will filter; otherwise we still filter client-side.
+        const res = await axiosInstance.get<ApiProject[]>("projects", { params: { workspaceId } });
         const filtered = res.data.filter((p) => p.workspaceId === workspaceId);
         setProjects(filtered.sort((a, b) => a.name.localeCompare(b.name)));
     }, []);
 
-    const createProject = useCallback(async (request: ProjectUpsertRequest) => {
-        setError(null);
-        const payload = {
-            workspaceId: request.workspaceId,
-            name: request.name.trim(),
-            description: request.description?.trim() || null,
-        };
+    const createProject = useCallback(
+        async (request: ProjectUpsertRequest) => {
+            setError(null);
+            const payload = {
+                workspaceId: request.workspaceId,
+                name: request.name.trim(),
+                description: request.description?.trim() || null,
+            };
 
-        const res = await axiosInstance.post<ApiProject>("projects", payload);
+            const res = await axiosInstance.post<ApiProject>("projects", payload);
 
-        if (selectedWorkspaceId === res.data.workspaceId) {
-            setProjects((prev) => [...prev, res.data].sort((a, b) => a.name.localeCompare(b.name)));
-        }
+            if (selectedWorkspaceId === res.data.workspaceId) {
+                setProjects((prev) => [...prev, res.data].sort((a, b) => a.name.localeCompare(b.name)));
+            }
 
-        return res.data;
-    }, [selectedWorkspaceId]);
+            return res.data;
+        },
+        [selectedWorkspaceId]
+    );
 
-    const updateProject = useCallback(async (id: number, request: ProjectUpsertRequest) => {
-        setError(null);
+    const updateProject = useCallback(
+        async (id: number, request: ProjectUpsertRequest) => {
+            setError(null);
+            const payload = {
+                workspaceId: request.workspaceId,
+                name: request.name.trim(),
+                description: request.description?.trim() || null,
+            };
 
-        const payload = {
-            workspaceId: request.workspaceId,
-            name: request.name.trim(),
-            description: request.description?.trim() || null,
-        };
+            const res = await axiosInstance.put<ApiProject>(`projects/${id}`, payload);
 
-        const res = await axiosInstance.put<ApiProject>(`projects/${id}`, payload);
+            if (selectedWorkspaceId === res.data.workspaceId) {
+                setProjects((prev) => prev.map((p) => (p.id === id ? res.data : p)));
+            } else {
+                setProjects((prev) => prev.filter((p) => p.id !== id));
+            }
 
-        if (selectedWorkspaceId === res.data.workspaceId) {
-            setProjects((prev) => prev.map((p) => (p.id === id ? res.data : p)));
-        } else {
-            setProjects((prev) => prev.filter((p) => p.id !== id));
-        }
-
-        return res.data;
-    }, [selectedWorkspaceId]);
+            return res.data;
+        },
+        [selectedWorkspaceId]
+    );
 
     const deleteProject = useCallback(
         async (id: number) => {
             setError(null);
             await axiosInstance.delete(`projects/${id}`);
-
             setProjects((prev) => prev.filter((p) => p.id !== id));
 
             if (selectedProjectId === id) {
@@ -312,10 +342,8 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
     const fetchTasksByProjectId = useCallback(async (projectId: number) => {
         setError(null);
 
-        // Prefer server-side filtering (if supported); fallback to client filtering.
-        const res = await axiosInstance.get<ApiTask[]>("tasks", {
-            params: { projectId },
-        });
+        // If backend supports ?projectId= it will filter; otherwise we still filter client-side.
+        const res = await axiosInstance.get<ApiTask[]>("tasks", { params: { projectId } });
 
         const normalized: TaskItem[] = res.data
             .filter((t) => t.projectId === projectId)
@@ -328,86 +356,139 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
                 status: normalizeTaskStatus(t.status),
                 priority: normalizePriority(t.priority),
                 dueDate: normalizeDueDate(t),
-                assignee: (t.assignee ?? "").trim() || null,
+                assigneeId: t.assigneeId ?? null,
+                assigneeName: (t.assigneeName ?? "").trim() || null,
             }));
 
         setTasks(normalized);
     }, []);
 
-    const createTask = useCallback(async (request: TaskUpsertRequest) => {
-        setError(null);
-
-        const due = request.dueDate ? new Date(request.dueDate) : null;
-        const dueIso = due && !Number.isNaN(due.getTime()) ? due.toISOString() : null;
-
-        const payload: any = {
-            projectId: request.projectId,
-            parentTaskId: request.parentTaskId ?? null,
-            title: request.title.trim(),
-            description: request.description?.trim() || null,
-
-            // Send both names for compatibility with .NET APIs (it will ignore unknown props)
-            dueDate: dueIso,
-            targetDate: dueIso,
-
-            status: toApiStatus(request.status),
-            priority: toApiPriority(request.priority),
-            assignee: request.assignee?.trim() || null,
-        };
-
-        const res = await axiosInstance.post<ApiTask>("tasks", payload);
-
-        const normalized: TaskItem = {
-            id: res.data.id,
-            projectId: res.data.projectId,
-            parentTaskId: res.data.parentTaskId ?? null,
-            title: res.data.title,
-            description: res.data.description ?? null,
-            status: normalizeTaskStatus(res.data.status),
-            priority: normalizePriority(res.data.priority),
-            dueDate: normalizeDueDate(res.data),
-            assignee: (res.data.assignee ?? "").trim() || null,
-        };
-
-        setTasks((prev) => [...prev, normalized]);
-        return normalized;
+    const assignUserToTask = useCallback(async (taskId: number, userId: number) => {
+        await axiosInstance.post(`tasks/${taskId}/assign/${userId}`);
     }, []);
 
-    const updateTask = useCallback(async (id: number, request: TaskUpsertRequest) => {
-        setError(null);
-
-        const due = request.dueDate ? new Date(request.dueDate) : null;
-        const dueIso = due && !Number.isNaN(due.getTime()) ? due.toISOString() : null;
-
-        const payload: any = {
-            projectId: request.projectId,
-            parentTaskId: request.parentTaskId ?? null,
-            title: request.title.trim(),
-            description: request.description?.trim() || null,
-            dueDate: dueIso,
-            targetDate: dueIso,
-            status: toApiStatus(request.status),
-            priority: toApiPriority(request.priority),
-            assignee: request.assignee?.trim() || null,
-        };
-
-        const res = await axiosInstance.put<ApiTask>(`tasks/${id}`, payload);
-
-        const normalized: TaskItem = {
-            id: res.data.id,
-            projectId: res.data.projectId,
-            parentTaskId: res.data.parentTaskId ?? null,
-            title: res.data.title,
-            description: res.data.description ?? null,
-            status: normalizeTaskStatus(res.data.status),
-            priority: normalizePriority(res.data.priority),
-            dueDate: normalizeDueDate(res.data),
-            assignee: (res.data.assignee ?? "").trim() || null,
-        };
-
-        setTasks((prev) => prev.map((t) => (t.id === id ? normalized : t)));
-        return normalized;
+    const removeUserFromTask = useCallback(async (taskId: number, userId: number) => {
+        try {
+            await axiosInstance.delete(`tasks/${taskId}/assign/${userId}`);
+        } catch (err: any) {
+            // If backend says assignment not found, treat as already removed.
+            if (err?.response?.status === 404) return;
+            throw err;
+        }
     }, []);
+
+    const createTask = useCallback(
+        async (request: TaskUpsertRequest) => {
+            setError(null);
+
+            const due = request.dueDate ? new Date(request.dueDate) : null;
+            const dueIso = due && !Number.isNaN(due.getTime()) ? due.toISOString() : null;
+
+            // IMPORTANT: do NOT send assignee string or assigneeId in task payload.
+            const payload: any = {
+                projectId: request.projectId,
+                parentTaskId: request.parentTaskId ?? null,
+                title: request.title.trim(),
+                description: request.description?.trim() || null,
+                status: toApiStatus(request.status),
+                priority: toApiPriority(request.priority),
+                dueDate: dueIso,
+                targetDate: dueIso, // compatibility with older API DTOs
+            };
+
+            const res = await axiosInstance.post<ApiTask>("tasks", payload);
+
+            const created: TaskItem = {
+                id: res.data.id,
+                projectId: res.data.projectId,
+                parentTaskId: res.data.parentTaskId ?? null,
+                title: res.data.title,
+                description: res.data.description ?? null,
+                status: normalizeTaskStatus(res.data.status),
+                priority: normalizePriority(res.data.priority),
+                dueDate: normalizeDueDate(res.data),
+                assigneeId: res.data.assigneeId ?? null,
+                assigneeName: (res.data.assigneeName ?? "").trim() || null,
+            };
+
+            // If user selected, assign via dedicated endpoint
+            const selectedAssigneeId = safeNumber(request.assigneeId);
+            if (selectedAssigneeId) {
+                await assignUserToTask(created.id, selectedAssigneeId);
+
+                const user = users.find((u) => u.id === selectedAssigneeId) ?? null;
+                created.assigneeId = selectedAssigneeId;
+                created.assigneeName = user?.name ?? created.assigneeName ?? null;
+            }
+
+            setTasks((prev) => [...prev, created]);
+            return created;
+        },
+        [assignUserToTask, users]
+    );
+
+    const updateTask = useCallback(
+        async (id: number, request: TaskUpsertRequest) => {
+            setError(null);
+
+            const existing = tasks.find((t) => t.id === id) ?? null;
+
+            const due = request.dueDate ? new Date(request.dueDate) : null;
+            const dueIso = due && !Number.isNaN(due.getTime()) ? due.toISOString() : null;
+
+            // IMPORTANT: do NOT send assignee string or assigneeId in task payload.
+            const payload: any = {
+                projectId: request.projectId,
+                parentTaskId: request.parentTaskId ?? null,
+                title: request.title.trim(),
+                description: request.description?.trim() || null,
+                status: toApiStatus(request.status),
+                priority: toApiPriority(request.priority),
+                dueDate: dueIso,
+                targetDate: dueIso,
+            };
+
+            const res = await axiosInstance.put<ApiTask>(`tasks/${id}`, payload);
+
+            const updated: TaskItem = {
+                id: res.data.id,
+                projectId: res.data.projectId,
+                parentTaskId: res.data.parentTaskId ?? null,
+                title: res.data.title,
+                description: res.data.description ?? null,
+                status: normalizeTaskStatus(res.data.status),
+                priority: normalizePriority(res.data.priority),
+                dueDate: normalizeDueDate(res.data),
+                assigneeId: res.data.assigneeId ?? existing?.assigneeId ?? null,
+                assigneeName: ((res.data.assigneeName ?? "").trim()) || existing?.assigneeName || null,
+            };
+
+            const nextAssigneeId = safeNumber(request.assigneeId);
+            const prevAssigneeId = existing?.assigneeId ?? null;
+
+            const assignmentChanged =
+                (prevAssigneeId ?? null) !== (nextAssigneeId ?? null);
+
+            if (assignmentChanged) {
+                if (prevAssigneeId) {
+                    await removeUserFromTask(id, prevAssigneeId);
+                }
+                if (nextAssigneeId) {
+                    await assignUserToTask(id, nextAssigneeId);
+                    const user = users.find((u) => u.id === nextAssigneeId) ?? null;
+                    updated.assigneeId = nextAssigneeId;
+                    updated.assigneeName = user?.name ?? updated.assigneeName ?? null;
+                } else {
+                    updated.assigneeId = null;
+                    updated.assigneeName = null;
+                }
+            }
+
+            setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
+            return updated;
+        },
+        [assignUserToTask, removeUserFromTask, tasks, users]
+    );
 
     const deleteTask = useCallback(async (id: number) => {
         setError(null);
@@ -427,7 +508,7 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
                         ? "Done"
                         : "To Do";
 
-            const updated = await updateTask(taskId, {
+            return await updateTask(taskId, {
                 projectId: current.projectId,
                 parentTaskId: current.parentTaskId ?? null,
                 title: current.title,
@@ -435,140 +516,245 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
                 status: nextStatus,
                 priority: current.priority,
                 dueDate: current.dueDate ?? null,
-                assignee: current.assignee ?? null,
+                assigneeId: current.assigneeId ?? null,
             });
-
-            return updated;
         },
         [tasks, updateTask]
     );
 
-    const bootstrap = useCallback(async () => {
+    // Initial boot: users + workspaces + select default workspace/project + load tasks
+    useEffect(() => {
         const token = localStorage.getItem("token");
         if (!token) return;
 
-        setIsLoading(true);
-        setError(null);
+        let cancelled = false;
 
-        try {
-            await fetchWorkspaces();
-
-            const storedWs = localStorage.getItem(LS_SELECTED_WORKSPACE);
-            const storedPr = localStorage.getItem(LS_SELECTED_PROJECT);
-
-            const wsId =
-                (storedWs ? Number(storedWs) : NaN) &&
-                    workspaces.some((w) => w.id === Number(storedWs))
-                    ? Number(storedWs)
-                    : null;
-
-            const chosenWorkspaceId = wsId ?? (workspaces[0]?.id ?? null);
-            setSelectedWorkspaceId(chosenWorkspaceId);
-
-            if (chosenWorkspaceId) {
-                await fetchProjectsByWorkspaceId(chosenWorkspaceId);
-
-                const availableProjects = await axiosInstance.get<ApiProject[]>("projects", {
-                    params: { workspaceId: chosenWorkspaceId },
-                });
-
-                const filteredProjects = availableProjects.data.filter(
-                    (p) => p.workspaceId === chosenWorkspaceId
-                );
-
-                const prId =
-                    (storedPr ? Number(storedPr) : NaN) &&
-                        filteredProjects.some((p) => p.id === Number(storedPr))
-                        ? Number(storedPr)
-                        : null;
-
-                const chosenProjectId = prId ?? (filteredProjects[0]?.id ?? null);
-                setSelectedProjectId(chosenProjectId);
-
-                if (chosenProjectId) {
-                    await fetchTasksByProjectId(chosenProjectId);
-                } else {
-                    setTasks([]);
-                }
-            } else {
-                setProjects([]);
-                setTasks([]);
-                setSelectedProjectId(null);
-            }
-        } catch (e: any) {
-            setError(e?.response?.data?.message ?? e?.message ?? "Failed to initialize data.");
-        } finally {
-            setIsLoading(false);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fetchProjectsByWorkspaceId, fetchTasksByProjectId, fetchWorkspaces, setSelectedProjectId, setSelectedWorkspaceId]);
-
-    useEffect(() => {
-        // If AppProvider is mounted only after auth, this runs once and loads everything.
-        // If AppProvider is mounted globally, token might be missing and this will no-op until a refresh.
-        bootstrap();
-    }, [bootstrap]);
-
-    useEffect(() => {
         const run = async () => {
-            if (!selectedWorkspaceId) return;
-
             setIsLoading(true);
             setError(null);
 
             try {
-                await fetchProjectsByWorkspaceId(selectedWorkspaceId);
+                const [usersRes, workspacesRes] = await Promise.all([
+                    axiosInstance.get<ApiUser[]>("users"),
+                    axiosInstance.get<ApiWorkspace[]>("workspaces"),
+                ]);
 
-                // Pick first project if current selection is invalid
-                const res = await axiosInstance.get<ApiProject[]>("projects", {
+                if (cancelled) return;
+
+                const usersData: AppUser[] = usersRes.data
+                    .map((u) => ({
+                        id: u.id,
+                        name: u.name,
+                        email: u.email,
+                        roleId: u.roleId,
+                        role: u.role,
+                    }))
+                    .sort((a, b) => a.name.localeCompare(b.name));
+
+                const workspacesData: Workspace[] = [...workspacesRes.data].sort((a, b) =>
+                    a.name.localeCompare(b.name)
+                );
+
+                setUsers(usersData);
+                setWorkspaces(workspacesData);
+
+                const storedWsId = safeNumber(localStorage.getItem(LS_SELECTED_WORKSPACE));
+                const initialWorkspaceId =
+                    (storedWsId && workspacesData.some((w) => w.id === storedWsId) ? storedWsId : null) ??
+                    (workspacesData[0]?.id ?? null);
+
+                setSelectedWorkspaceId(initialWorkspaceId);
+
+                if (!initialWorkspaceId) {
+                    setProjects([]);
+                    setTasks([]);
+                    setSelectedProjectId(null);
+                    return;
+                }
+
+                const projectsRes = await axiosInstance.get<ApiProject[]>("projects", {
+                    params: { workspaceId: initialWorkspaceId },
+                });
+
+                const projectsData = projectsRes.data
+                    .filter((p) => p.workspaceId === initialWorkspaceId)
+                    .sort((a, b) => a.name.localeCompare(b.name));
+
+                setProjects(projectsData);
+
+                const storedPrId = safeNumber(localStorage.getItem(LS_SELECTED_PROJECT));
+                const initialProjectId =
+                    (storedPrId && projectsData.some((p) => p.id === storedPrId) ? storedPrId : null) ??
+                    (projectsData[0]?.id ?? null);
+
+                setSelectedProjectId(initialProjectId);
+
+                if (!initialProjectId) {
+                    setTasks([]);
+                    return;
+                }
+
+                const tasksRes = await axiosInstance.get<ApiTask[]>("tasks", {
+                    params: { projectId: initialProjectId },
+                });
+
+                const tasksData: TaskItem[] = tasksRes.data
+                    .filter((t) => t.projectId === initialProjectId)
+                    .map((t) => ({
+                        id: t.id,
+                        projectId: t.projectId,
+                        parentTaskId: t.parentTaskId ?? null,
+                        title: t.title,
+                        description: t.description ?? null,
+                        status: normalizeTaskStatus(t.status),
+                        priority: normalizePriority(t.priority),
+                        dueDate: normalizeDueDate(t),
+                        assigneeId: t.assigneeId ?? null,
+                        assigneeName: (t.assigneeName ?? "").trim() || null,
+                    }));
+
+                setTasks(tasksData);
+            } catch (e: any) {
+                setError(e?.response?.data?.message ?? e?.message ?? "Failed to initialize app data.");
+            } finally {
+                if (!cancelled) setIsLoading(false);
+            }
+        };
+
+        run();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [setSelectedProjectId, setSelectedWorkspaceId]);
+
+    // Workspace change => reload projects, auto-pick project, reload tasks
+    useEffect(() => {
+        const token = localStorage.getItem("token");
+        if (!token) return;
+
+        if (!selectedWorkspaceId) return;
+
+        let cancelled = false;
+
+        const run = async () => {
+            setIsLoading(true);
+            setError(null);
+
+            try {
+                const projectsRes = await axiosInstance.get<ApiProject[]>("projects", {
                     params: { workspaceId: selectedWorkspaceId },
                 });
 
-                const filtered = res.data.filter((p) => p.workspaceId === selectedWorkspaceId);
-                const currentValid = selectedProjectId
-                    ? filtered.some((p) => p.id === selectedProjectId)
-                    : false;
+                if (cancelled) return;
 
-                const nextProjectId = currentValid ? selectedProjectId : filtered[0]?.id ?? null;
+                const projectsData = projectsRes.data
+                    .filter((p) => p.workspaceId === selectedWorkspaceId)
+                    .sort((a, b) => a.name.localeCompare(b.name));
+
+                setProjects(projectsData);
+
+                const currentValid =
+                    selectedProjectId !== null && projectsData.some((p) => p.id === selectedProjectId);
+
+                const nextProjectId = currentValid ? selectedProjectId : projectsData[0]?.id ?? null;
                 setSelectedProjectId(nextProjectId);
 
-                if (nextProjectId) {
-                    await fetchTasksByProjectId(nextProjectId);
-                } else {
+                if (!nextProjectId) {
                     setTasks([]);
+                    return;
                 }
+
+                const tasksRes = await axiosInstance.get<ApiTask[]>("tasks", {
+                    params: { projectId: nextProjectId },
+                });
+
+                if (cancelled) return;
+
+                const tasksData: TaskItem[] = tasksRes.data
+                    .filter((t) => t.projectId === nextProjectId)
+                    .map((t) => ({
+                        id: t.id,
+                        projectId: t.projectId,
+                        parentTaskId: t.parentTaskId ?? null,
+                        title: t.title,
+                        description: t.description ?? null,
+                        status: normalizeTaskStatus(t.status),
+                        priority: normalizePriority(t.priority),
+                        dueDate: normalizeDueDate(t),
+                        assigneeId: t.assigneeId ?? null,
+                        assigneeName: (t.assigneeName ?? "").trim() || null,
+                    }));
+
+                setTasks(tasksData);
             } catch (e: any) {
                 setError(e?.response?.data?.message ?? e?.message ?? "Failed to load projects/tasks.");
             } finally {
-                setIsLoading(false);
+                if (!cancelled) setIsLoading(false);
             }
         };
 
         run();
+
+        return () => {
+            cancelled = true;
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedWorkspaceId]);
 
+    // Project change => reload tasks
     useEffect(() => {
-        const run = async () => {
-            if (!selectedProjectId) return;
+        const token = localStorage.getItem("token");
+        if (!token) return;
 
+        if (!selectedProjectId) return;
+
+        let cancelled = false;
+
+        const run = async () => {
             setIsLoading(true);
             setError(null);
 
             try {
-                await fetchTasksByProjectId(selectedProjectId);
+                const res = await axiosInstance.get<ApiTask[]>("tasks", {
+                    params: { projectId: selectedProjectId },
+                });
+
+                if (cancelled) return;
+
+                const tasksData: TaskItem[] = res.data
+                    .filter((t) => t.projectId === selectedProjectId)
+                    .map((t) => ({
+                        id: t.id,
+                        projectId: t.projectId,
+                        parentTaskId: t.parentTaskId ?? null,
+                        title: t.title,
+                        description: t.description ?? null,
+                        status: normalizeTaskStatus(t.status),
+                        priority: normalizePriority(t.priority),
+                        dueDate: normalizeDueDate(t),
+                        assigneeId: t.assigneeId ?? null,
+                        assigneeName: (t.assigneeName ?? "").trim() || null,
+                    }));
+
+                setTasks(tasksData);
             } catch (e: any) {
                 setError(e?.response?.data?.message ?? e?.message ?? "Failed to load tasks.");
             } finally {
-                setIsLoading(false);
+                if (!cancelled) setIsLoading(false);
             }
         };
 
         run();
-    }, [fetchTasksByProjectId, selectedProjectId]);
+
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedProjectId]);
 
     const value = useMemo<AppContextValue>(
         () => ({
+            users,
             workspaces,
             projects,
             tasks,
@@ -591,7 +777,7 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
             createProject,
             updateProject,
             deleteProject,
-
+            fetchUsers,
             fetchTasksByProjectId,
             createTask,
             updateTask,
@@ -599,6 +785,7 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
             toggleTaskStatus,
         }),
         [
+            users,
             workspaces,
             projects,
             tasks,
@@ -621,6 +808,7 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
             updateTask,
             deleteTask,
             toggleTaskStatus,
+            fetchUsers
         ]
     );
 
