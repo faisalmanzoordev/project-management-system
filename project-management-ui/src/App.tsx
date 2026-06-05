@@ -1,6 +1,6 @@
 import React from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-
+import Unauthorized from "./pages/Unauthorized";
 import ProtectedRoute from "./components/ProtectedRoute";
 import MainLayout from "./components/MainLayout";
 
@@ -29,6 +29,7 @@ const App: React.FC = () => {
                         <Route path="/" element={<Navigate to="/dashboard" replace />} />
                         <Route path="/dashboard" element={<Dashboard />} />
                         <Route path="/workspaces" element={<Workspaces />} />
+                        <Route path="/unauthorized" element={<Unauthorized />} />
                     </Route>
                 </Route>
 

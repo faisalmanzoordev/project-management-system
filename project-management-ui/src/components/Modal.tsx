@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { IconX } from "./ui/icons";
 
 let bodyLockCount = 0;
 
@@ -14,9 +15,7 @@ function lockBodyScroll() {
     body.dataset.pmPaddingRight = body.style.paddingRight || "";
 
     body.style.overflow = "hidden";
-    if (scrollbarWidth > 0) {
-        body.style.paddingRight = `${scrollbarWidth}px`;
-    }
+    if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`;
 }
 
 function unlockBodyScroll() {
@@ -24,7 +23,6 @@ function unlockBodyScroll() {
     if (bodyLockCount !== 0) return;
 
     const body = document.body;
-
     body.style.overflow = body.dataset.pmOverflow ?? "";
     body.style.paddingRight = body.dataset.pmPaddingRight ?? "";
 
@@ -54,7 +52,7 @@ export type ModalProps = {
     children: React.ReactNode;
     lockScroll?: boolean;
     closeOnOverlayClick?: boolean;
-    maxWidthClassName?: string; // e.g. "max-w-2xl", "max-w-4xl"
+    maxWidthClassName?: string;
 };
 
 const Modal: React.FC<ModalProps> = ({
@@ -69,21 +67,39 @@ const Modal: React.FC<ModalProps> = ({
     const panelRef = useRef<HTMLDivElement | null>(null);
     const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
+    // keep latest onClose stable (prevents effect re-run per keystroke)
+    const onCloseRef = useRef(onClose);
     useEffect(() => {
-        if (!isOpen) return;
+        onCloseRef.current = onClose;
+    }, [onClose]);
+
+    const [render, setRender] = useState(false);
+    const [animateIn, setAnimateIn] = useState(false);
+
+    useEffect(() => {
+        if (isOpen) {
+            setRender(true);
+            requestAnimationFrame(() => setAnimateIn(true));
+        } else if (render) {
+            setAnimateIn(false);
+            const t = window.setTimeout(() => setRender(false), 180);
+            return () => window.clearTimeout(t);
+        }
+    }, [isOpen, render]);
+
+    useEffect(() => {
+        if (!render) return;
 
         previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-
         if (lockScroll) lockBodyScroll();
 
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
                 e.preventDefault();
-                onClose();
+                onCloseRef.current();
                 return;
             }
 
-            // Basic focus trap on Tab
             if (e.key === "Tab" && panelRef.current) {
                 const focusables = getFocusableElements(panelRef.current);
                 if (focusables.length === 0) return;
@@ -108,10 +124,12 @@ const Modal: React.FC<ModalProps> = ({
 
         document.addEventListener("keydown", handleKeyDown);
 
-        // Focus the first focusable element in the panel (or the panel itself)
         const focusTimer = window.setTimeout(() => {
             const panel = panelRef.current;
             if (!panel) return;
+
+            const active = document.activeElement as HTMLElement | null;
+            if (active && panel.contains(active)) return;
 
             const focusables = getFocusableElements(panel);
             if (focusables.length > 0) focusables[0].focus();
@@ -124,60 +142,58 @@ const Modal: React.FC<ModalProps> = ({
 
             if (lockScroll) unlockBodyScroll();
 
-            // Restore focus
             previouslyFocusedRef.current?.focus?.();
             previouslyFocusedRef.current = null;
         };
-    }, [isOpen, lockScroll, onClose]);
+    }, [render, lockScroll]);
 
-    if (!isOpen) return null;
+    if (!render) return null;
 
     return createPortal(
-        <div
-            className="fixed inset-0 z-50"
-            role="dialog"
-            aria-modal="true"
-            aria-label={title}
-        >
-            {/* Scrollable overlay */}
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={title}>
             <div className="fixed inset-0 overflow-y-auto">
                 {/* Backdrop */}
                 <div
-                    className="fixed inset-0 bg-slate-900/40"
+                    className={[
+                        "fixed inset-0 bg-slate-900/40 backdrop-blur-md transition-opacity duration-200",
+                        animateIn ? "opacity-100" : "opacity-0",
+                    ].join(" ")}
                     onMouseDown={(e) => {
                         if (!closeOnOverlayClick) return;
-                        // only close if clicking the backdrop itself
-                        if (e.target === e.currentTarget) onClose();
+                        if (e.target === e.currentTarget) onCloseRef.current();
                     }}
                 />
 
                 {/* Container */}
-                <div className="relative flex min-h-full items-start justify-center p-4 sm:p-6">
+                <div className="relative flex min-h-full items-end justify-center p-4 sm:items-center sm:p-6">
                     {/* Panel */}
                     <div
                         ref={panelRef}
                         tabIndex={-1}
                         className={[
-                            "relative w-full rounded-lg border border-slate-200 bg-white shadow-xl outline-none",
+                            "relative w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl outline-none",
                             maxWidthClassName,
-                            // keep panel within viewport; make internal body scroll
-                            "max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-3rem)] overflow-hidden",
+                            "transition duration-200 will-change-transform",
+                            animateIn
+                                ? "opacity-100 translate-y-0 sm:scale-100"
+                                : "opacity-0 translate-y-6 sm:translate-y-0 sm:scale-95",
                         ].join(" ")}
                     >
                         {/* Header */}
-                        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-4">
+                        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-4">
                             <h3 className="text-base font-semibold text-slate-900">{title}</h3>
                             <button
                                 type="button"
-                                onClick={onClose}
-                                className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
+                                onClick={() => onCloseRef.current()}
+                                className="inline-flex h-9 w-9 items-center justify-center rounded-xl ring-1 ring-inset ring-slate-200 text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-slate-900/10"
+                                aria-label="Close"
                             >
-                                Close
+                                <IconX />
                             </button>
                         </div>
 
-                        {/* Scrollable content */}
-                        <div className="max-h-[calc(100vh-8rem)] overflow-y-auto px-5 py-4">
+                        {/* Scrollable body */}
+                        <div className="max-h-[calc(100vh-9rem)] overflow-y-auto px-5 py-5">
                             {children}
                         </div>
                     </div>

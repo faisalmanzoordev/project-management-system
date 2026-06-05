@@ -1,25 +1,42 @@
-import { Navigate, Outlet } from "react-router-dom";
-import { useAuth } from "../context/AuthContext.js";
+import React from "react";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 
-interface ProtectedRouteProps {
-  allowedRoles?: string[];
-}
+export type ProtectedRouteProps = {
+    allowedRoles?: string[];
+    redirectTo?: string;
+    unauthorizedTo?: string;
+};
 
-const ProtectedRoute = ({ allowedRoles }: ProtectedRouteProps) => {
-  const { isAuthenticated, user } = useAuth();
+const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
+    allowedRoles,
+    redirectTo = "/login",
+    unauthorizedTo = "/unauthorized",
+}) => {
+    const { isAuthenticated, user } = useAuth();
+    const location = useLocation();
 
-  // If the user is completely unauthenticated, bounce them back to the login page
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
+    if (!isAuthenticated || !user) {
+        return <Navigate to={redirectTo} replace state={{ from: location }} />;
+    }
 
-  // If specific access controls are requested and the user doesn't hold that clearance level
-  if (allowedRoles && (!user || !allowedRoles.includes(user.roleName))) {
-    return <Navigate to="/workspaces" replace />;
-  }
+    if (allowedRoles && allowedRoles.length > 0) {
+        const isAllowed = allowedRoles.includes(user.roleName);
+        if (!isAllowed) {
+            return (
+                <Navigate
+                    to={unauthorizedTo}
+                    replace
+                    state={{
+                        requiredRoles: allowedRoles,
+                        from: location.pathname,
+                    }}
+                />
+            );
+        }
+    }
 
-  // Using <Outlet /> tells React Router to render whatever nested child route is currently active!
-  return <Outlet />;
+    return <Outlet />;
 };
 
 export default ProtectedRoute;
