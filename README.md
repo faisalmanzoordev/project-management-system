@@ -28,24 +28,6 @@ A robust, enterprise-grade project management application featuring an interacti
 * **Secure Authentication:** State-tracked login pipeline powered by cryptographically verified JWT Bearer Tokens.
 * **One-Way Hashing:** Production-ready database security utilizing the **BCrypt** algorithm to hash user credentials.
 
----
-
-## 📸 System Snapshots & UI Highlights
-
-### Interactive Workspace Dashboard (Table View)
-![Workspaces Dashboard Overview](https://taskgrid-portal.netlify.app/assets/snapshots/table-view.png)
-*Alternative Local Path Reference: `project-management-ui/src/assets/snapshots/table-view.png`*
-
-### Agile Kanban Lifecycle Lanes
-![Kanban Status Management](https://taskgrid-portal.netlify.app/assets/snapshots/kanban-view.png)
-*Alternative Local Path Reference: `project-management-ui/src/assets/snapshots/kanban-view.png`*
-
-### Secure API Layer & JWT Token Authorize Controller
-![Swagger API Documentation Architecture](https://taskgrid-portal.netlify.app/assets/snapshots/swagger-ui.png)
-*Alternative Local Path Reference: `project-management-api/snapshots/swagger-ui.png`*
-
----
-
 ## 🛠️ Technical Stack Matrix
 
 | Architecture Layer | Technologies & Libraries Utilized |
