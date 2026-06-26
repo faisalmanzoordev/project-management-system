@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axiosInstance from "../api/axiosInstance";
+import { useApp } from "../context/AppContext"; // Import your global app context hook
 import { IconChart, IconCheckCircle, IconClipboard, IconUsers } from "../components/ui/icons";
 
 type TenantMetricsResponse = {
@@ -42,9 +43,11 @@ const MetricCard: React.FC<MetricCardProps> = ({ title, value, icon, gradientCla
 };
 
 const Dashboard: React.FC = () => {
+    const { hubConnection } = useApp(); // Destructure hub connection from your app context
     const [metrics, setMetrics] = useState<TenantMetricsResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
 
+    // Initial HTTP fetch when dashboard mounts
     useEffect(() => {
         const load = async () => {
             setError(null);
@@ -57,6 +60,21 @@ const Dashboard: React.FC = () => {
         };
         load();
     }, []);
+
+    // SignalR Live Stream Event Subscriptions Listener
+    useEffect(() => {
+        if (!hubConnection) return;
+
+        // Listen for the broadcast event from the .NET backend gateway
+        hubConnection.on("ReceiveMetricsUpdate", (updatedMetrics: TenantMetricsResponse) => {
+            setMetrics(updatedMetrics);
+        });
+
+        // Cleanup listener configuration on unmount sequence
+        return () => {
+            hubConnection.off("ReceiveMetricsUpdate");
+        };
+    }, [hubConnection]);
 
     const cards = useMemo(() => {
         const m = metrics ?? {

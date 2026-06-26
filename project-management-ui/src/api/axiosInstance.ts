@@ -10,7 +10,7 @@ const baseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
 
 if (!baseUrl) {
     throw new Error(
-        "VITE_API_BASE_URL is missing. Add it to your .env file (e.g. VITE_API_BASE_URL=https://your-domain.com/api/)."
+        "VITE_API_BASE_URL is missing. Add it to your .env file (e.g. VITE_API_BASE_URL=https://taskapis.devforhealth.com/api/)."
     );
 }
 

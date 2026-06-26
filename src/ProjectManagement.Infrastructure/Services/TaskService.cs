@@ -1,9 +1,11 @@
 ﻿#nullable enable
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using ProjectManagement.Application.Common.Interfaces;
 using ProjectManagement.Application.DTOs.Tasks;
 using ProjectManagement.Domain.Common;
 using ProjectManagement.Domain.Entities;
+using ProjectManagement.Domain.Enums;
 using TaskEntity = ProjectManagement.Domain.Entities.Tasks;
 
 namespace ProjectManagement.Infrastructure.Services;
@@ -12,6 +14,9 @@ public sealed class TaskService : ITaskService
 {
     private const string SystemUser = "System_User";
     private readonly IApplicationDbContext _context;
+    private readonly IHubContext<ChatHubProxy> _hubContext;
+
+    public class ChatHubProxy : Hub { }
 
     public TaskService(IApplicationDbContext context)
     {
@@ -85,6 +90,18 @@ public sealed class TaskService : ITaskService
 
         await _context.Tasks.AddAsync(entity, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
+
+        // ✅ FIXED ERROR 2: Explicit enum comparisons instead of raw string values
+        var updatedMetrics = new
+        {
+            totalProjects = await _context.Projects.CountAsync(p => !p.IsDeleted, cancellationToken),
+            totalUsers = await _context.Users.CountAsync(cancellationToken),
+            totalOpenTasks = await _context.Tasks.CountAsync(t => !t.IsDeleted && t.Status != TaskItemStatus.Done, cancellationToken),
+            totalCompletedTasks = await _context.Tasks.CountAsync(t => !t.IsDeleted && t.Status == TaskItemStatus.Done, cancellationToken)
+        };
+
+        // Broadcast update across the opened client sockets
+        await _hubContext.Clients.All.SendAsync("ReceiveMetricsUpdate", updatedMetrics, cancellationToken);
 
         return new TaskResponse(
             entity.Id,

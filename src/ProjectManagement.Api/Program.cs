@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using ProjectManagement.Api.Hubs;
 using ProjectManagement.Api.Middleware;
 using ProjectManagement.Infrastructure;
 using System.Text;
@@ -8,7 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // 1. Register all infrastructure dependencies (DbContext & Interface Contracts)
 builder.Services.AddInfrastructureServices(builder.Configuration);
-
+builder.Services.AddSignalR();
 // 2. Configure JWT Authentication
 var jwtSettings = builder.Configuration.GetSection("JwtSettings");
 var secretKey = Encoding.UTF8.GetBytes(jwtSettings["Secret"]!);
@@ -62,14 +63,15 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// Add the Allow All CORS policy definition
+// Add the Allow CORS policy definition
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", policy =>
+    options.AddPolicy("CorsPolicy", policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.WithOrigins("http://localhost:5173","http://localhost:5174", "https://taskgrid-portal.netlify.app") // 👈 just specific URLs allowed
+              .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowCredentials(); 
     });
 });
 
@@ -85,7 +87,9 @@ app.UseSwaggerUI(c =>
 });
 
 app.UseMiddleware<CustomExceptionMiddleware>();
-app.UseCors("AllowAll");
+app.UseWebSockets();
+app.UseCors("CorsPolicy");
+app.MapHub<ChatHub>("/chathub");
 app.UseHttpsRedirection();
 
 app.UseAuthentication();

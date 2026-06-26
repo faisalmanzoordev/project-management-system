@@ -26,7 +26,8 @@ namespace ProjectManagement.Infrastructure.Data
         public DbSet<TaskAssignee> TaskAssignees => Set<TaskAssignee>();
         public DbSet<Comment> Comments => Set<Comment>();
         public DbSet<Role> Roles => Set<Role>();
-
+        public DbSet<ChatRoom> ChatRooms { get; set; }
+        public DbSet<ChatMessage> ChatMessages { get; set; }
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);

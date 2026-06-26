@@ -4,8 +4,10 @@ import React, {
     useContext,
     useEffect,
     useMemo,
+    useRef,
     useState,
 } from "react";
+import * as signalR from '@microsoft/signalr';
 import axiosInstance from "../api/axiosInstance";
 
 export type Workspace = {
@@ -153,6 +155,17 @@ function safeNumber(value: unknown): number | null {
     return null;
 }
 
+function getChatHubUrl(): string {
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
+    if (!apiBaseUrl) {
+        throw new Error(
+            "VITE_API_BASE_URL is missing. Add it to your .env file (e.g. VITE_API_BASE_URL=https://taskapis.devforhealth.com/api/)."
+        );
+    }
+    const root = apiBaseUrl.trim().replace(/\/?api\/?$/, "/");
+    return `${root.endsWith("/") ? root.slice(0, -1) : root}/chathub`;
+}
+
 type AppContextValue = {
     users: AppUser[];
     workspaces: Workspace[];
@@ -164,7 +177,8 @@ type AppContextValue = {
 
     isLoading: boolean;
     error: string | null;
-
+    hubConnection: signalR.HubConnection | null;
+    isChatConnected: boolean;
     setSelectedWorkspaceId: (workspaceId: number | null) => void;
     setSelectedProjectId: (projectId: number | null) => void;
 
@@ -179,7 +193,7 @@ type AppContextValue = {
     createProject: (request: ProjectUpsertRequest) => Promise<Project>;
     updateProject: (id: number, request: ProjectUpsertRequest) => Promise<Project>;
     deleteProject: (id: number) => Promise<void>;
-
+    
     // Tasks
     fetchTasksByProjectId: (projectId: number) => Promise<void>;
     createTask: (request: TaskUpsertRequest) => Promise<TaskItem>;
@@ -204,7 +218,12 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
-
+    const [hubConnection, setHubConnection] = useState<signalR.HubConnection | null>(null);
+    const [isChatConnected, setIsChatConnected] = useState<boolean>(false);
+    // Holds the SignalR connection instance across renders/StrictMode's dev-only
+    // mount-unmount-remount cycle, so we reuse one connection instead of
+    // racing two against each other.
+    const connectionRef = useRef<signalR.HubConnection | null>(null);
     const setSelectedWorkspaceId = useCallback((workspaceId: number | null) => {
         _setSelectedWorkspaceId(workspaceId);
         if (workspaceId === null) localStorage.removeItem(LS_SELECTED_WORKSPACE);
@@ -752,6 +771,80 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
         };
     }, [selectedProjectId]);
 
+    // SignalR function
+    useEffect(() => {
+        // Reuse an existing connection instance across StrictMode's dev-only
+        // mount -> cleanup -> remount cycle instead of starting a brand new
+        // one each time (which previously caused "stop() called before
+        // start() finished" aborts and a permanently stuck lock flag).
+        let connection = connectionRef.current;
+        let cancelled = false;
+
+        if (!connection) {
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl(getChatHubUrl(), { // 👈 Apni .NET API ka local port check karke lagayein
+                    skipNegotiation: true,
+                    transport: signalR.HttpTransportType.WebSockets
+                })
+                .withAutomaticReconnect()
+                .configureLogging(signalR.LogLevel.Information)
+                .build();
+
+            connectionRef.current = connection;
+
+            connection.onreconnected(() => setIsChatConnected(true));
+            connection.onreconnecting(() => setIsChatConnected(false));
+            connection.onclose(() => setIsChatConnected(false));
+        }
+
+        async function startSignalR() {
+            // Only attempt start() from a genuinely disconnected state; avoids
+            // calling start() on a connection that's already connecting/connected
+            // when StrictMode re-runs this effect.
+            if (connection!.state !== signalR.HubConnectionState.Disconnected) {
+                if (connection!.state === signalR.HubConnectionState.Connected) {
+                    setHubConnection(connection!);
+                    setIsChatConnected(true);
+                }
+                return;
+            }
+
+            try {
+                await connection!.start();
+                if (cancelled) return;
+                console.log("🚀 SignalR ChatHub Connected Successfully!");
+                setHubConnection(connection!);
+                setIsChatConnected(true);
+            } catch (err) {
+                if (cancelled) return;
+                console.error("❌ SignalR Connection Error: ", err);
+            }
+        }
+
+        startSignalR();
+
+        // Cleanup only marks this effect run as stale; it does NOT stop the
+        // connection, so StrictMode's dev-only double-invoke doesn't abort an
+        // in-flight handshake. The connection is torn down once, on true
+        // app unmount, via the separate effect below.
+        return () => {
+            cancelled = true;
+        };
+    }, []); // Empty dependency array taake sirf ek hi baar execute ho
+
+    // True teardown on actual app unmount (not StrictMode's dev double-invoke).
+    useEffect(() => {
+        return () => {
+            const connection = connectionRef.current;
+            if (connection) {
+                connection.stop()
+                    .then(() => console.log("SignalR connection stopped cleanly."))
+                    .catch(err => console.error("Error stopping SignalR connection:", err));
+                connectionRef.current = null;
+            }
+        };
+    }, []);
+
     const value = useMemo<AppContextValue>(
         () => ({
             users,
@@ -764,7 +857,8 @@ export const AppProvider: React.FC<React.PropsWithChildren> = ({ children }) => 
 
             isLoading,
             error,
-
+            hubConnection,
+            isChatConnected,
             setSelectedWorkspaceId,
             setSelectedProjectId,
 

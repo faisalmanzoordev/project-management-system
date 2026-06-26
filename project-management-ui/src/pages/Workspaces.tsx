@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import Modal from "../components/Modal";
 import { useApp } from "../context/AppContext";
 import type { AppUser, TaskItem, TaskPriority, TaskStatus } from "../context/AppContext";
-
+import { ChatPanel } from "../components/ChatPanel";
 import { Dropdown } from "../components/ui/Dropdown";
 import { Button } from "../components/ui/Button";
 import { IconButton } from "../components/ui/IconButton";
@@ -132,7 +132,7 @@ const Workspaces: React.FC = () => {
     const [isTaskEditMode, setIsTaskEditMode] = useState(false);
     const [taskEditId, setTaskEditId] = useState<number | null>(null);
     const [taskForm, setTaskForm] = useState<TaskFormState>({ ...defaultTaskForm });
-
+    const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
     const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
 
     const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
@@ -562,6 +562,26 @@ const Workspaces: React.FC = () => {
                             disabled={!selectedProject}
                             onClick={handleDeleteProject}
                         />
+
+                        <div className="mx-1 hidden h-6 w-px bg-slate-200 sm:block" />
+
+                        <button
+                            type="button"
+                            onClick={() => setIsChatOpen(!isChatOpen)}
+                            disabled={!selectedProjectId}
+                            className={[
+                                "inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 shadow-sm transition-all",
+                                "hover:bg-slate-50 hover:text-slate-900",
+                                "disabled:cursor-not-allowed disabled:opacity-50",
+                                isChatOpen ? "bg-slate-100 ring-2 ring-slate-900/10 text-slate-900" : "",
+                            ].join(" ")}
+                        >
+                            <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                            Discuss Team Project
+                        </button>
                     </div>
                 </div>
 
@@ -1230,6 +1250,15 @@ const Workspaces: React.FC = () => {
                     </div>
                 ) : null}
             </Modal>
+
+            {/* Project Discussion Chat Panel */}
+            {isChatOpen && selectedProjectId ? (
+                <ChatPanel
+                    projectId={selectedProjectId}
+                    roomName={`Project-${selectedProjectId}-Group`}
+                    onClose={() => setIsChatOpen(false)}
+                />
+            ) : null}
         </div>
     );
 };
