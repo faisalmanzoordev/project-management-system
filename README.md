@@ -4,7 +4,6 @@ A robust, enterprise-grade project management application featuring an interacti
 
 ## 🔗 Live Deployments & Repository Links
 * **Live Production Frontend:** [https://taskgrid-portal.netlify.app](https://taskgrid-portal.netlify.app)
-* **Live Backend Swagger Documentation:** [https://your-plesk-domain.com/swagger](https://taskapis.devforhealth.com/swagger/index.html
 * **GitHub Repository:**(https://github.com/faisalmanzoordev/project-management-system)(https://github.com/faisalmanzoordev/project-management-system)
 
 ---
